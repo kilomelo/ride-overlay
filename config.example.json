@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "inputs": {
+    "activity_file": null,
+    "font_file": null,
+    "background_image_file": null
+  },
+  "clip": {
+    "start_seconds": null,
+    "end_seconds": null,
+    "cumulative_origin": "activity_start"
+  },
+  "output": {
+    "filename": null,
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "background": {
+      "mode": "chroma_key",
+      "chroma_key_color": "#00FF00"
+    },
+    "bitrate_mbps": 16
+  },
+  "dashboards": [
+    {
+      "id": "speed",
+      "source": "speed",
+      "unit": "km/h",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "precision": 1,
+      "pad_zeros": true,
+      "update_interval_ms": 100,
+      "font_size": 128,
+      "anchor": {
+        "x": 0.25,
+        "y": 0.85
+      },
+      "align": "bottom_center",
+      "color": "#FFFFFFFF",
+      "stroke_width": 2,
+      "stroke_color": "#000000FF"
+    },
+    {
+      "id": "distance",
+      "source": "distance",
+      "unit": "km",
+      "smoothing": {
+        "method": "none"
+      },
+      "precision": 2,
+      "pad_zeros": true,
+      "update_interval_ms": 500,
+      "font_size": 96,
+      "anchor": {
+        "x": 0.75,
+        "y": 0.85
+      },
+      "align": "bottom_center",
+      "color": "#FFFFFFFF",
+      "stroke_width": 2,
+      "stroke_color": "#000000FF"
+    },
+    {
+      "id": "elapsed_time",
+      "source": "elapsed_time",
+      "unit": "hms",
+      "smoothing": {
+        "method": "none"
+      },
+      "precision": 0,
+      "pad_zeros": true,
+      "update_interval_ms": 1000,
+      "font_size": 72,
+      "anchor": {
+        "x": 0.5,
+        "y": 0.1
+      },
+      "align": "top_center",
+      "color": "#FFFFFFFF",
+      "stroke_width": 2,
+      "stroke_color": "#000000FF"
+    },
+    {
+      "id": "current_time",
+      "source": "current_time",
+      "unit": "hms",
+      "smoothing": {
+        "method": "none"
+      },
+      "precision": 0,
+      "pad_zeros": true,
+      "update_interval_ms": 1000,
+      "font_size": 72,
+      "anchor": {
+        "x": 0.5,
+        "y": 0.2
+      },
+      "align": "top_center",
+      "color": "#FFFFFFFF",
+      "stroke_width": 2,
+      "stroke_color": "#000000FF"
+    },
+    {
+      "type": "trajectory",
+      "id": "route",
+      "width": 0.3,
+      "anchor": {
+        "x": 0.95,
+        "y": 0.05
+      },
+      "align": "top_right",
+      "update_interval_ms": 200,
+      "line_width": 8,
+      "remaining_color": "#FFFFFF66",
+      "completed_color": "#00E676CC",
+      "marker_image_file": null,
+      "marker_scale": 2.0
+    }
+  ]
+}
