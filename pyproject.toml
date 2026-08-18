@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ride-overlay"
-version = "0.1.0"
+version = "0.2.0"
 description = "Convert FIT or GPX activity data into dashboard overlay videos"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -18,20 +18,41 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+gui = [
+  "PySide6>=6.8,<7",
+]
 dev = [
   "pytest>=8.3,<10",
   "pytest-cov>=6,<8",
+  "pytest-qt>=4.4,<5",
   "ruff>=0.12,<1",
 ]
 
 [project.scripts]
 ride-overlay = "ride_overlay:main"
+ride-overlay-editor = "ride_overlay_gui.main:main"
 
 [tool.setuptools]
-py-modules = ["ride_overlay", "ride_overlay_data", "ride_overlay_dashboard"]
+py-modules = [
+  "ride_overlay",
+  "ride_overlay_dashboard",
+  "ride_overlay_data",
+  "ride_overlay_export",
+  "ride_overlay_video",
+]
+
+[tool.setuptools.packages.find]
+include = ["ride_overlay_gui*"]
 
 [tool.setuptools.data-files]
-"share/ride-overlay/assets/images" = ["assets/images/arrow.png"]
+"share/ride-overlay/assets/images" = [
+  "assets/images/align_btn.png",
+  "assets/images/arrow.png",
+  "assets/images/heart.png",
+  "assets/images/move_widget.png",
+  "assets/images/pause_btn.png",
+  "assets/images/play_btn.png",
+]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

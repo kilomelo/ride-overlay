@@ -149,6 +149,20 @@ def test_resolve_paths_uses_deterministic_defaults(tmp_path) -> None:
     assert paths.activity.name == "a.gpx"
     assert paths.font.name == "font.ttf"
     assert paths.output.name == "overlay.mp4"
+    assert paths.output.parent == tmp_path / "export"
+    assert paths.preview == tmp_path / "export" / "preview.png"
+
+
+def test_resolve_paths_does_not_treat_legacy_custom_output_as_source_video(tmp_path) -> None:
+    (tmp_path / "activity.gpx").touch()
+    (tmp_path / "font.ttf").touch()
+    (tmp_path / "custom.mp4").touch()
+    config = AppConfig.model_validate(config_data())
+    config.output.filename = "custom.mp4"
+
+    paths = resolve_paths(tmp_path, config)
+
+    assert paths.videos == ()
 
 
 def test_dashboard_without_data_in_clip_renders_dash() -> None:

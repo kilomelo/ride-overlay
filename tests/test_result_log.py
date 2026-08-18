@@ -40,7 +40,7 @@ def test_failed_task_still_writes_result_log(tmp_path: Path) -> None:
 
     assert main([str(tmp_path)]) == 2
 
-    content = (tmp_path / "result.log").read_text(encoding="utf-8")
+    content = (tmp_path / "export" / "result.log").read_text(encoding="utf-8")
     assert "status: FAILED" in content
     assert "exit_code: 2" in content
     assert "读取并校验配置 | FAILED" in content

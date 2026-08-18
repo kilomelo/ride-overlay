@@ -12,6 +12,7 @@ dist/
 
 # Local projects may contain private GPS tracks and very large source videos.
 test_proj/
+**/export/
 
 # Default generated files when running against the repository root.
 overlay.mp4

@@ -1,14 +1,18 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "inputs": {
     "activity_file": null,
     "font_file": null,
-    "background_image_file": null
+    "background_image_file": null,
+    "video_files": null
   },
   "clip": {
     "start_seconds": null,
     "end_seconds": null,
     "cumulative_origin": "activity_start"
+  },
+  "timeline": {
+    "activity_start_offset_frames": 0
   },
   "output": {
     "filename": null,
@@ -118,6 +122,17 @@
       "completed_color": "#00E676CC",
       "marker_image_file": null,
       "marker_scale": 2.0
+    },
+    {
+      "type": "heartbeat",
+      "id": "heartbeat",
+      "width": 0.08,
+      "anchor": {
+        "x": 0.1,
+        "y": 0.5
+      },
+      "align": "center",
+      "heart_image_file": null
     }
   ]
 }

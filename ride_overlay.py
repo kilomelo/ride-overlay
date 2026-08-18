@@ -39,6 +39,9 @@ from ride_overlay_dashboard import (
     DashboardDefinition,
     DashboardRuntime,
     FrameRenderer,
+    HeartbeatAnimationState,
+    HeartbeatDashboardConfig,
+    HeartbeatRuntime,
     OutputConfig,
     SmoothingConfig,
     SmoothingMethod,
@@ -75,6 +78,11 @@ from ride_overlay_data import (
     read_gpx,
     series_gap_details,
 )
+from ride_overlay_video import (
+    VideoError,
+    discover_video_files,
+    probe_video,
+)
 
 _blank_to_none = blank_to_none
 
@@ -94,6 +102,9 @@ __all__ = [
     "DashboardRuntime",
     "FrameRenderer",
     "GapStrategy",
+    "HeartbeatAnimationState",
+    "HeartbeatDashboardConfig",
+    "HeartbeatRuntime",
     "MetricSource",
     "OutputConfig",
     "RawPoint",
@@ -102,6 +113,7 @@ __all__ = [
     "SmoothingConfig",
     "SmoothingMethod",
     "TimeSeries",
+    "TimelineConfig",
     "ToolError",
     "TrajectoryDashboardConfig",
     "TrajectoryData",
@@ -130,13 +142,14 @@ __all__ = [
 
 LOGGER = logging.getLogger("ride-overlay")
 CONFIG_FILENAME = "config.json"
+EXPORT_DIRNAME = "export"
 PREVIEW_FILENAME = "preview.png"
 RESULT_LOG_FILENAME = "result.log"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 ACTIVITY_EXTENSIONS = {".fit", ".gpx"}
 FONT_EXTENSIONS = {".otf", ".ttf", ".ttc"}
-VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
-DEFAULT_MARKER_RELATIVE_PATH = Path("assets/images/arrow.png")
+DEFAULT_ARROW_RELATIVE_PATH = Path("assets/images/arrow.png")
+DEFAULT_HEART_RELATIVE_PATH = Path("assets/images/heart.png")
 
 
 class ToolError(RideOverlayError):
@@ -311,10 +324,21 @@ class InputsConfig(StrictModel):
     activity_file: str | None = None
     font_file: str | None = None
     background_image_file: str | None = None
+    video_files: list[str] | None = None
 
     _normalize_blanks = field_validator(
         "activity_file", "font_file", "background_image_file", mode="before"
     )(_blank_to_none)
+
+    @field_validator("video_files", mode="before")
+    @classmethod
+    def normalize_video_files(cls, value: Any) -> Any:
+        if value is None or value == "":
+            return None
+        if isinstance(value, list):
+            normalized = [item.strip() if isinstance(item, str) else item for item in value]
+            return [item for item in normalized if item != ""] or None
+        return value
 
 
 class ClipConfig(StrictModel):
@@ -323,10 +347,15 @@ class ClipConfig(StrictModel):
     cumulative_origin: CumulativeOrigin = CumulativeOrigin.ACTIVITY_START
 
 
+class TimelineConfig(StrictModel):
+    activity_start_offset_frames: int = 0
+
+
 class AppConfig(StrictModel):
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     inputs: InputsConfig = Field(default_factory=InputsConfig)
     clip: ClipConfig = Field(default_factory=ClipConfig)
+    timeline: TimelineConfig = Field(default_factory=TimelineConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     dashboards: Annotated[list[DashboardDefinition], Field(min_length=1)]
 
@@ -342,12 +371,15 @@ class AppConfig(StrictModel):
 @dataclass(frozen=True)
 class ResolvedPaths:
     project: Path
+    export_dir: Path
     activity: Path
     font: Path
     background_image: Path | None
     output: Path
     preview: Path
+    videos: tuple[Path, ...] = ()
     trajectory_markers: dict[str, Path] = dataclass_field(default_factory=dict)
+    heartbeat_images: dict[str, Path] = dataclass_field(default_factory=dict)
 
 
 def load_config(project: Path) -> AppConfig:
@@ -420,22 +452,24 @@ def _discover_first(project: Path, extensions: set[str], label: str) -> Path:
     return candidates[0].resolve()
 
 
-def _default_marker_image() -> Path:
+def _default_image_asset(relative_path: Path, label: str) -> Path:
     candidates = (
-        Path(__file__).resolve().parent / DEFAULT_MARKER_RELATIVE_PATH,
-        Path(sys.prefix) / "share" / "ride-overlay" / DEFAULT_MARKER_RELATIVE_PATH,
+        Path(__file__).resolve().parent / relative_path,
+        Path(sys.prefix) / "share" / "ride-overlay" / relative_path,
     )
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
     searched = ", ".join(str(candidate) for candidate in candidates)
-    raise ConfigError(f"找不到默认轨迹箭头图片 arrow.png；已检查: {searched}")
+    raise ConfigError(f"找不到默认{label} {relative_path.name}；已检查: {searched}")
 
 
 def resolve_paths(project_dir: Path, config: AppConfig) -> ResolvedPaths:
     project = project_dir.expanduser().resolve()
     if not project.is_dir():
         raise ConfigError(f"项目目录不存在或不是目录: {project}")
+    export_dir = project / EXPORT_DIRNAME
+    export_dir.mkdir(parents=True, exist_ok=True)
 
     activity = (
         _safe_project_file(project, config.inputs.activity_file, "运动数据文件")
@@ -472,11 +506,28 @@ def resolve_paths(project_dir: Path, config: AppConfig) -> ResolvedPaths:
                 f"轨迹仪表盘 {dashboard.id} 的当前位置图片",
             )
             if dashboard.marker_image_file
-            else _default_marker_image()
+            else _default_image_asset(DEFAULT_ARROW_RELATIVE_PATH, "轨迹箭头图片")
         )
         if marker.suffix.lower() != ".png":
             raise ConfigError(f"轨迹仪表盘 {dashboard.id} 的当前位置图片目前只支持 PNG")
         trajectory_markers[dashboard.id] = marker
+
+    heartbeat_images: dict[str, Path] = {}
+    for dashboard in config.dashboards:
+        if not isinstance(dashboard, HeartbeatDashboardConfig):
+            continue
+        heart_image = (
+            _safe_project_file(
+                project,
+                dashboard.heart_image_file,
+                f"心跳动画仪表盘 {dashboard.id} 的心脏图片",
+            )
+            if dashboard.heart_image_file
+            else _default_image_asset(DEFAULT_HEART_RELATIVE_PATH, "心脏图片")
+        )
+        if heart_image.suffix.lower() != ".png":
+            raise ConfigError(f"心跳动画仪表盘 {dashboard.id} 的心脏图片目前只支持 PNG")
+        heartbeat_images[dashboard.id] = heart_image
 
     default_name = (
         "overlay.mov"
@@ -487,11 +538,11 @@ def resolve_paths(project_dir: Path, config: AppConfig) -> ResolvedPaths:
     output_relative = Path(output_value)
     if output_relative.is_absolute():
         raise ConfigError("output.filename 必须是项目目录内的相对路径")
-    output = (project / output_relative).resolve()
+    output = (export_dir / output_relative).resolve()
     try:
-        output.relative_to(project)
+        output.relative_to(export_dir)
     except ValueError as exc:
-        raise ConfigError("output.filename 不得指向项目目录外") from exc
+        raise ConfigError("output.filename 不得指向 export 目录外") from exc
     output.parent.mkdir(parents=True, exist_ok=True)
 
     expected_suffix = (
@@ -502,17 +553,40 @@ def resolve_paths(project_dir: Path, config: AppConfig) -> ResolvedPaths:
             f"{config.output.background.mode.value} 模式必须输出 {expected_suffix} 文件，"
             f"当前为 {output.name}"
         )
-    if output in (activity, font, background_image, *trajectory_markers.values()):
+    if output in (
+        activity,
+        font,
+        background_image,
+        *trajectory_markers.values(),
+        *heartbeat_images.values(),
+    ):
         raise ConfigError("输出文件不得覆盖输入文件")
+
+    try:
+        videos = discover_video_files(
+            project,
+            config.inputs.video_files,
+            excluded=(
+                output,
+                project / output_relative,
+                project / PREVIEW_FILENAME,
+                export_dir / PREVIEW_FILENAME,
+            ),
+        )
+    except VideoError as exc:
+        raise ConfigError(str(exc)) from exc
 
     return ResolvedPaths(
         project=project,
+        export_dir=export_dir,
         activity=activity,
         font=font,
         background_image=background_image,
         output=output,
-        preview=project / PREVIEW_FILENAME,
+        preview=export_dir / PREVIEW_FILENAME,
+        videos=videos,
         trajectory_markers=trajectory_markers,
+        heartbeat_images=heartbeat_images,
     )
 
 
@@ -543,53 +617,22 @@ def _run_checked(command: list[str], description: str) -> subprocess.CompletedPr
 
 
 def find_preview_video(paths: ResolvedPaths) -> Path | None:
-    excluded = {paths.output.resolve(), paths.preview.resolve()}
-    candidates = sorted(
-        (
-            path.resolve()
-            for path in paths.project.iterdir()
-            if path.is_file()
-            and path.suffix.lower() in VIDEO_EXTENSIONS
-            and path.resolve() not in excluded
-            and not path.name.casefold().startswith("overlay.")
-        ),
-        key=lambda path: (path.name.casefold(), path.name),
-    )
-    if not candidates:
+    if not paths.videos:
         return None
-    if len(candidates) > 1:
+    if len(paths.videos) > 1:
         LOGGER.warning(
-            "找到 %d 个预览视频，按文件名选择第一个: %s",
-            len(candidates),
-            candidates[0].name,
+            "找到 %d 个预览视频，使用视频时间轴中的第一段: %s",
+            len(paths.videos),
+            paths.videos[0].name,
         )
-    return candidates[0]
+    return paths.videos[0]
 
 
 def probe_video_duration(video: Path) -> float:
-    ffprobe = shutil.which("ffprobe")
-    if ffprobe is None:
-        raise ToolError("找不到 ffprobe，请先安装 FFmpeg 并确保它位于 PATH")
-    result = _run_checked(
-        [
-            ffprobe,
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "json",
-            str(video),
-        ],
-        f"读取视频信息 {video.name}",
-    )
     try:
-        duration = float(json.loads(result.stdout)["format"]["duration"])
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ToolError(f"无法确定视频时长: {video.name}") from exc
-    if not math.isfinite(duration) or duration <= 0:
-        raise ToolError(f"视频时长无效: {video.name}")
-    return duration
+        return probe_video(video).duration_seconds
+    except VideoError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def extract_video_frame(video: Path, time_seconds: float, width: int, height: int) -> Image.Image:
@@ -653,7 +696,7 @@ def render_preview(
     config: AppConfig,
     paths: ResolvedPaths,
     clip: ClipRange,
-    runtimes: list[DashboardRuntime | TrajectoryRuntime],
+    runtimes: list[DashboardRuntime | TrajectoryRuntime | HeartbeatRuntime],
     renderer: FrameRenderer,
 ) -> dict[str, Any]:
     preview_video = find_preview_video(paths)
@@ -689,7 +732,7 @@ def render_preview(
         data_time = (clip.start + clip.end) / 2
         LOGGER.info("未找到视频，预览使用运动数据中点 %.3fs", data_time)
     texts = sample_dashboard_texts(runtimes, clip, data_time)
-    image = renderer.render(runtimes, texts, bottom_image=bottom_image)
+    image = renderer.render(runtimes, texts, bottom_image=bottom_image, preview=True)
     save_image_atomic(image, paths.preview)
     LOGGER.info("预览图片已生成: %s", paths.preview)
     return {
@@ -716,7 +759,7 @@ def render_video(
     config: AppConfig,
     paths: ResolvedPaths,
     clip: ClipRange,
-    runtimes: list[DashboardRuntime | TrajectoryRuntime],
+    runtimes: list[DashboardRuntime | TrajectoryRuntime | HeartbeatRuntime],
     renderer: FrameRenderer,
 ) -> dict[str, Any]:
     ffmpeg = check_encoder(config.output.background.mode)
@@ -831,7 +874,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
         description="将 FIT/GPX 运动数据渲染为仪表盘叠加视频",
     )
     parser.add_argument("project_dir", type=Path, help="包含 config.json 和素材的项目目录")
-    parser.add_argument("--preview", action="store_true", help="只生成静态预览图片")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--preview", action="store_true", help="只生成静态预览图片")
+    mode.add_argument("--editor", action="store_true", help="打开图形界面编辑器")
     parser.add_argument("--verbose", action="store_true", help="输出更详细的日志")
     return parser
 
@@ -861,7 +906,7 @@ def run(args: argparse.Namespace, report: RunReport) -> None:
 
     with report.stage("解析输入与输出路径"):
         paths = resolve_paths(project, config)
-        report.result_path = paths.output.parent / RESULT_LOG_FILENAME
+        report.result_path = paths.export_dir / RESULT_LOG_FILENAME
         report.details["inputs"] = {
             "activity": file_details(paths.activity),
             "font": file_details(paths.font),
@@ -872,6 +917,11 @@ def run(args: argparse.Namespace, report: RunReport) -> None:
                 dashboard_id: file_details(path)
                 for dashboard_id, path in paths.trajectory_markers.items()
             },
+            "heartbeat_images": {
+                dashboard_id: file_details(path)
+                for dashboard_id, path in paths.heartbeat_images.items()
+            },
+            "videos": [file_details(path) for path in paths.videos],
         }
         report.details["output_plan"] = {
             "video": str(paths.output),
@@ -920,6 +970,13 @@ def run(args: argparse.Namespace, report: RunReport) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = build_argument_parser()
     args = parser.parse_args(argv)
+    if args.editor:
+        try:
+            from ride_overlay_gui.main import run_editor
+        except ImportError as exc:
+            parser.error("图形界面依赖尚未安装，请执行: python -m pip install -e '.[gui]'")
+            raise AssertionError from exc
+        return run_editor(args.project_dir)
     command_args = list(argv) if argv is not None else sys.argv[1:]
     project = args.project_dir.expanduser().resolve()
     report = RunReport(
@@ -961,7 +1018,7 @@ def main(argv: list[str] | None = None) -> int:
             report.duration_seconds,
         )
         if project.is_dir():
-            target = report.result_path or (project / RESULT_LOG_FILENAME)
+            target = report.result_path or (project / EXPORT_DIRNAME / RESULT_LOG_FILENAME)
             LOGGER.info("工作结果日志: %s", target)
             try:
                 report.write(target)

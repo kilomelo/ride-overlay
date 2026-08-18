@@ -227,7 +227,18 @@ class TrajectoryDashboardConfig(StrictModel):
     _normalize_marker = field_validator("marker_image_file", mode="before")(blank_to_none)
 
 
-DashboardDefinition = DashboardConfig | TrajectoryDashboardConfig
+class HeartbeatDashboardConfig(StrictModel):
+    type: Literal["heartbeat"]
+    id: Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
+    width: Annotated[float, Field(gt=0, le=1)]
+    anchor: AnchorConfig
+    align: Align = Align.CENTER
+    heart_image_file: str | None = None
+
+    _normalize_heart_image = field_validator("heart_image_file", mode="before")(blank_to_none)
+
+
+DashboardDefinition = DashboardConfig | TrajectoryDashboardConfig | HeartbeatDashboardConfig
 
 
 @dataclass(frozen=True)
@@ -269,7 +280,78 @@ class TrajectoryRuntime:
     scale_px_per_meter: float
 
 
-RuntimeDefinition = DashboardRuntime | TrajectoryRuntime
+@dataclass(frozen=True)
+class HeartbeatRuntime:
+    config: HeartbeatDashboardConfig
+    series: TimeSeries
+    image_path: Path
+    origin_x: float
+    origin_y: float
+    width_px: int
+    height_px: int
+    animation_start_seconds: float
+
+
+@dataclass
+class HeartbeatAnimationState:
+    cycle_start_seconds: float | None = None
+    cycle_period_seconds: float | None = None
+    current_bpm: float | None = None
+    last_time_seconds: float | None = None
+
+    def reset(self) -> None:
+        self.cycle_start_seconds = None
+        self.cycle_period_seconds = None
+        self.current_bpm = None
+        self.last_time_seconds = None
+
+    @staticmethod
+    def _bpm_at(series: TimeSeries, time_seconds: float) -> float | None:
+        value = series.value_at(time_seconds)
+        return value if value is not None and math.isfinite(value) and value > 0 else None
+
+    def opacity_at(
+        self,
+        series: TimeSeries,
+        time_seconds: float,
+        animation_start_seconds: float,
+    ) -> float:
+        if self.last_time_seconds is not None and time_seconds < self.last_time_seconds - 1e-9:
+            self.reset()
+        if self.cycle_start_seconds is None:
+            self.cycle_start_seconds = animation_start_seconds
+            self.current_bpm = self._bpm_at(series, animation_start_seconds)
+            if self.current_bpm is not None:
+                self.cycle_period_seconds = 60.0 / self.current_bpm
+
+        if self.cycle_period_seconds is None:
+            self.current_bpm = self._bpm_at(series, time_seconds)
+            if self.current_bpm is None:
+                self.last_time_seconds = time_seconds
+                return 1.0
+            self.cycle_start_seconds = time_seconds
+            self.cycle_period_seconds = 60.0 / self.current_bpm
+
+        assert self.cycle_start_seconds is not None
+        assert self.cycle_period_seconds is not None
+        while time_seconds >= self.cycle_start_seconds + self.cycle_period_seconds - 1e-9:
+            boundary = self.cycle_start_seconds + self.cycle_period_seconds
+            next_bpm = self._bpm_at(series, boundary)
+            if next_bpm is not None:
+                self.current_bpm = next_bpm
+                self.cycle_period_seconds = 60.0 / next_bpm
+            self.cycle_start_seconds = boundary
+
+        phase = max(
+            0.0,
+            (time_seconds - self.cycle_start_seconds) / self.cycle_period_seconds,
+        )
+        opacity = 0.5 + 0.5 * math.cos(2 * math.pi * phase)
+        self.last_time_seconds = time_seconds
+        return min(1.0, max(0.0, opacity))
+
+
+RuntimeDefinition = DashboardRuntime | TrajectoryRuntime | HeartbeatRuntime
 
 
 class ClipConfigLike(Protocol):
@@ -286,6 +368,7 @@ class RenderPathsLike(Protocol):
     font: Path
     background_image: Path | None
     trajectory_markers: dict[str, Path]
+    heartbeat_images: dict[str, Path]
 
 
 class ReportLike(Protocol):
@@ -462,6 +545,120 @@ def _build_trajectory_runtime(
     return runtime, details
 
 
+def _build_heartbeat_runtime(
+    dashboard: HeartbeatDashboardConfig,
+    config: DashboardAppConfigLike,
+    activity: ActivityData,
+    clip: ClipRange,
+    paths: RenderPathsLike | None,
+) -> tuple[HeartbeatRuntime | None, dict[str, Any]]:
+    series = activity.metrics.get(MetricSource.HEART_RATE)
+    if series is None:
+        return None, {
+            "id": dashboard.id,
+            "type": dashboard.type,
+            "source": MetricSource.HEART_RATE.value,
+            "status": "SKIPPED",
+            "reason": "运动文件无法提供 heart_rate",
+        }
+    if paths is None or dashboard.id not in paths.heartbeat_images:
+        raise ConfigError(f"心跳动画仪表盘 {dashboard.id} 缺少已解析的心脏图片")
+    image_path = paths.heartbeat_images[dashboard.id]
+    try:
+        with Image.open(image_path) as image:
+            source_width, source_height = image.size
+    except Exception as exc:
+        raise ConfigError(f"无法读取心跳动画仪表盘 {dashboard.id} 的心脏图片: {exc}") from exc
+    if source_width <= 0 or source_height <= 0:
+        raise ConfigError(f"心跳动画仪表盘 {dashboard.id} 的心脏图片尺寸无效")
+
+    width_px = max(1, round(dashboard.width * config.output.width))
+    height_px = max(1, round(width_px * source_height / source_width))
+    origin_x, origin_y = aligned_origin(
+        dashboard.anchor,
+        dashboard.align,
+        width_px,
+        height_px,
+        config.output.width,
+        config.output.height,
+    )
+    overflow_edges: list[str] = []
+    if origin_x < 0:
+        overflow_edges.append("left")
+    if origin_x + width_px > config.output.width:
+        overflow_edges.append("right")
+    if origin_y < 0:
+        overflow_edges.append("top")
+    if origin_y + height_px > config.output.height:
+        overflow_edges.append("bottom")
+    if overflow_edges:
+        LOGGER.warning(
+            "心跳动画仪表盘 %s 超出画面边界（%s），将保持配置尺寸，不自动缩小",
+            dashboard.id,
+            ", ".join(overflow_edges),
+        )
+
+    first_in_clip = bisect.bisect_left(series.times, clip.start)
+    last_in_clip = bisect.bisect_right(series.times, clip.end)
+    has_clip_data = (
+        first_in_clip < last_in_clip
+        or series.value_at(clip.start) is not None
+        or series.value_at(clip.end) is not None
+    )
+    if not has_clip_data:
+        LOGGER.warning(
+            "心跳动画仪表盘 %s 在截取范围内没有可用心率；视频中将保持完全不透明，"
+            "直到首次获得有效心率",
+            dashboard.id,
+        )
+    long_gap_details = series_gap_details(series, clip.start, clip.end)
+    if long_gap_details:
+        LOGGER.warning(
+            "心跳动画仪表盘 %s 在截取范围内有 %d 个心率数据空洞；空洞期间将沿用上一完整循环的频率",
+            dashboard.id,
+            len(long_gap_details),
+        )
+
+    runtime = HeartbeatRuntime(
+        config=dashboard,
+        series=series,
+        image_path=image_path,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        width_px=width_px,
+        height_px=height_px,
+        animation_start_seconds=clip.start,
+    )
+    details = {
+        "id": dashboard.id,
+        "type": dashboard.type,
+        "source": MetricSource.HEART_RATE.value,
+        "status": "ACTIVE" if has_clip_data else "NO_DATA_IN_CLIP",
+        "sample_count": len(series.times),
+        "image": str(image_path),
+        "source_image_size": {"width": source_width, "height": source_height},
+        "requested_width_ratio": dashboard.width,
+        "render_rectangle": {
+            "x": origin_x,
+            "y": origin_y,
+            "width": width_px,
+            "height": height_px,
+        },
+        "overflow_edges": overflow_edges,
+        "animation": {
+            "opacity_curve": "cosine: 1 -> 0 -> 1",
+            "period_seconds": "60 / current_bpm",
+            "frequency_update": "at_cycle_boundary",
+            "phase_origin": "clip_start",
+            "preview_opacity": 1.0,
+        },
+        "long_gap_count": len(long_gap_details),
+        "long_gaps": long_gap_details,
+        "gap_action": "沿用上一完整循环的频率；首次有效心率前保持完全不透明",
+    }
+    return runtime, details
+
+
 def build_dashboard_runtimes(
     config: DashboardAppConfigLike,
     activity: ActivityData,
@@ -475,13 +672,32 @@ def build_dashboard_runtimes(
         report.details["dashboards"] = dashboard_reports
     frame_ms = 1000 / config.output.fps
     for dashboard in config.dashboards:
-        if dashboard.update_interval_ms < frame_ms:
+        update_interval_ms = getattr(dashboard, "update_interval_ms", None)
+        if update_interval_ms is not None and update_interval_ms < frame_ms:
             LOGGER.warning(
                 "仪表盘 %s 的刷新间隔 %dms 小于单帧 %.2fms，可见刷新率将受 FPS 限制",
                 dashboard.id,
-                dashboard.update_interval_ms,
+                update_interval_ms,
                 frame_ms,
             )
+        if isinstance(dashboard, HeartbeatDashboardConfig):
+            runtime, details = _build_heartbeat_runtime(
+                dashboard,
+                config,
+                activity,
+                clip,
+                paths,
+            )
+            dashboard_reports.append(details)
+            if runtime is None:
+                LOGGER.warning(
+                    "心跳动画仪表盘 %s 已跳过: 运动文件无法提供 heart_rate",
+                    dashboard.id,
+                )
+                continue
+            runtimes.append(runtime)
+            LOGGER.info("心跳动画仪表盘 %s 可用: heart_rate", dashboard.id)
+            continue
         if isinstance(dashboard, TrajectoryDashboardConfig):
             runtime, details = _build_trajectory_runtime(dashboard, config, activity, paths)
             dashboard_reports.append(details)
@@ -655,6 +871,9 @@ def sample_dashboard_texts(
     results: list[str | float | None] = []
     relative_ms = max(0.0, (time_seconds - clip.start) * 1000)
     for runtime in runtimes:
+        if isinstance(runtime, HeartbeatRuntime):
+            results.append(min(max(time_seconds, clip.start), clip.end))
+            continue
         interval = runtime.config.update_interval_ms
         display_time = clip.start + math.floor((relative_ms + 1e-7) / interval) * interval / 1000
         display_time = min(display_time, clip.end)
@@ -749,6 +968,8 @@ class FrameRenderer:
         self.fonts: dict[int, ImageFont.FreeTypeFont] = {}
         self.marker_images: dict[tuple[Path, float], Image.Image] = {}
         self.trajectory_layers: dict[str, tuple[float, Image.Image, tuple[int, int]]] = {}
+        self.heart_images: dict[tuple[Path, int, int], Image.Image] = {}
+        self.heartbeat_states: dict[str, HeartbeatAnimationState] = {}
         if config.output.background.mode == BackgroundMode.TRANSPARENT:
             self.base = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
         else:
@@ -796,6 +1017,72 @@ class FrameRenderer:
             height = max(1, round(marker.height * runtime.config.marker_scale))
             self.marker_images[key] = marker.resize((width, height), Image.Resampling.LANCZOS)
         return self.marker_images[key]
+
+    def _heart_image(self, runtime: HeartbeatRuntime) -> Image.Image:
+        key = (runtime.image_path, runtime.width_px, runtime.height_px)
+        if key not in self.heart_images:
+            try:
+                image = Image.open(runtime.image_path).convert("RGBA")
+            except Exception as exc:
+                raise ConfigError(
+                    f"无法读取心跳动画仪表盘 {runtime.config.id} 的心脏图片: {exc}"
+                ) from exc
+            self.heart_images[key] = image.resize(
+                (runtime.width_px, runtime.height_px),
+                Image.Resampling.LANCZOS,
+            )
+        return self.heart_images[key]
+
+    @staticmethod
+    def _alpha_composite_clipped(
+        frame: Image.Image,
+        image: Image.Image,
+        destination_x: int,
+        destination_y: int,
+    ) -> None:
+        source_left = max(0, -destination_x)
+        source_top = max(0, -destination_y)
+        source_right = min(image.width, frame.width - destination_x)
+        source_bottom = min(image.height, frame.height - destination_y)
+        if source_right <= source_left or source_bottom <= source_top:
+            return
+        clipped = image.crop((source_left, source_top, source_right, source_bottom))
+        frame.alpha_composite(
+            clipped,
+            dest=(max(0, destination_x), max(0, destination_y)),
+        )
+
+    def _render_heartbeat(
+        self,
+        frame: Image.Image,
+        runtime: HeartbeatRuntime,
+        time_seconds: float,
+        *,
+        preview: bool,
+    ) -> None:
+        opacity = 1.0
+        if not preview:
+            state = self.heartbeat_states.setdefault(
+                runtime.config.id,
+                HeartbeatAnimationState(),
+            )
+            opacity = state.opacity_at(
+                runtime.series,
+                time_seconds,
+                runtime.animation_start_seconds,
+            )
+        if opacity <= 0:
+            return
+        image = self._heart_image(runtime)
+        if opacity < 1:
+            image = image.copy()
+            image.putalpha(image.getchannel("A").point(lambda value: round(value * opacity)))
+        self._alpha_composite_clipped(
+            frame,
+            image,
+            round(runtime.origin_x),
+            round(runtime.origin_y),
+        )
 
     def _trajectory_xy(
         self,
@@ -874,22 +1161,64 @@ class FrameRenderer:
         self.trajectory_layers[runtime.config.id] = (time_seconds, layer, destination)
         frame.alpha_composite(layer, dest=destination)
 
-    def render(
+    def dashboard_bounds(
+        self,
+        runtime: RuntimeDefinition,
+        value: str | float | None,
+    ) -> tuple[float, float, float, float] | None:
+        """Return the current rendered rectangle in output-frame coordinates."""
+
+        if value is None:
+            return None
+        if isinstance(runtime, (TrajectoryRuntime, HeartbeatRuntime)):
+            return (
+                runtime.origin_x,
+                runtime.origin_y,
+                runtime.origin_x + runtime.width_px,
+                runtime.origin_y + runtime.height_px,
+            )
+        assert isinstance(value, str)
+        dashboard = runtime.config
+        anchor = (dashboard.anchor.x * self.width, dashboard.anchor.y * self.height)
+        draw = ImageDraw.Draw(Image.new("L", (1, 1)))
+        left, top, right, bottom = draw.textbbox(
+            anchor,
+            value,
+            font=self._font(dashboard.font_size),
+            anchor=ALIGN_TO_PIL[dashboard.align],
+            stroke_width=dashboard.stroke_width,
+        )
+        return float(left), float(top), float(right), float(bottom)
+
+    def dashboard_bounds_by_id(
         self,
         runtimes: list[RuntimeDefinition],
+        values: tuple[str | float | None, ...],
+    ) -> dict[str, tuple[float, float, float, float]]:
+        bounds: dict[str, tuple[float, float, float, float]] = {}
+        for runtime, value in zip(runtimes, values, strict=True):
+            rectangle = self.dashboard_bounds(runtime, value)
+            if rectangle is not None:
+                bounds[runtime.config.id] = rectangle
+        return bounds
+
+    def _draw_dashboards(
+        self,
+        frame: Image.Image,
+        runtimes: list[RuntimeDefinition],
         texts: tuple[str | float | None, ...],
-        bottom_image: Image.Image | None = None,
-    ) -> Image.Image:
-        frame = (
-            bottom_image.convert("RGBA").copy() if bottom_image is not None else self.base.copy()
-        )
-        if frame.size != (self.width, self.height):
-            frame = frame.resize((self.width, self.height), Image.Resampling.LANCZOS)
-        if self.dashboard_background is not None:
-            frame.alpha_composite(self.dashboard_background)
+        *,
+        preview: bool,
+    ) -> None:
         draw = ImageDraw.Draw(frame)
-        for runtime, text in zip(runtimes, texts, strict=True):
+        # Earlier configuration entries are visually on top, matching editor hit priority.
+        pairs = list(zip(runtimes, texts, strict=True))
+        for runtime, text in reversed(pairs):
             if text is None:
+                continue
+            if isinstance(runtime, HeartbeatRuntime):
+                assert isinstance(text, float)
+                self._render_heartbeat(frame, runtime, text, preview=preview)
                 continue
             if isinstance(runtime, TrajectoryRuntime):
                 assert isinstance(text, float)
@@ -907,4 +1236,36 @@ class FrameRenderer:
                 stroke_width=dashboard.stroke_width,
                 stroke_fill=rgba_color(dashboard.stroke_color),
             )
+
+    def render_overlay(
+        self,
+        runtimes: list[RuntimeDefinition],
+        texts: tuple[str | float | None, ...],
+        *,
+        preview: bool = False,
+    ) -> Image.Image:
+        """Render only dashboard content for compositing over source video."""
+
+        frame = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        if self.dashboard_background is not None:
+            frame.alpha_composite(self.dashboard_background)
+        self._draw_dashboards(frame, runtimes, texts, preview=preview)
+        return frame
+
+    def render(
+        self,
+        runtimes: list[RuntimeDefinition],
+        texts: tuple[str | float | None, ...],
+        bottom_image: Image.Image | None = None,
+        *,
+        preview: bool = False,
+    ) -> Image.Image:
+        frame = (
+            bottom_image.convert("RGBA").copy() if bottom_image is not None else self.base.copy()
+        )
+        if frame.size != (self.width, self.height):
+            frame = frame.resize((self.width, self.height), Image.Resampling.LANCZOS)
+        if self.dashboard_background is not None:
+            frame.alpha_composite(self.dashboard_background)
+        self._draw_dashboards(frame, runtimes, texts, preview=preview)
         return frame

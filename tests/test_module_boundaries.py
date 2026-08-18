@@ -15,3 +15,5 @@ def test_dashboard_implementation_lives_in_dashboard_module() -> None:
     assert ride_overlay.build_dashboard_runtimes is ride_overlay_dashboard.build_dashboard_runtimes
     assert ride_overlay.FrameRenderer is ride_overlay_dashboard.FrameRenderer
     assert ride_overlay.DashboardConfig is ride_overlay_dashboard.DashboardConfig
+    assert ride_overlay.HeartbeatAnimationState is ride_overlay_dashboard.HeartbeatAnimationState
+    assert ride_overlay.HeartbeatRuntime is ride_overlay_dashboard.HeartbeatRuntime
