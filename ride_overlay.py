@@ -47,6 +47,7 @@ from ride_overlay_dashboard import (
     SmoothingMethod,
     StrictModel,
     TrajectoryDashboardConfig,
+    TrajectoryOverlapBlendMode,
     TrajectoryRuntime,
     blank_to_none,
     build_dashboard_runtimes,
@@ -117,9 +118,11 @@ __all__ = [
     "ToolError",
     "TrajectoryDashboardConfig",
     "TrajectoryData",
+    "TrajectoryOverlapBlendMode",
     "TrajectoryPoint",
     "TrajectoryRuntime",
     "TrajectorySample",
+    "VideoJoinConfig",
     "activity_details",
     "build_activity",
     "build_dashboard_runtimes",
@@ -347,12 +350,33 @@ class ClipConfig(StrictModel):
     cumulative_origin: CumulativeOrigin = CumulativeOrigin.ACTIVITY_START
 
 
+class VideoJoinConfig(StrictModel):
+    previous_file: Annotated[str, Field(min_length=1)]
+    next_file: Annotated[str, Field(min_length=1)]
+    overlap_frames: Annotated[int, Field(ge=0)] = 0
+
+    _normalize_files = field_validator("previous_file", "next_file", mode="before")(
+        lambda value: value.strip() if isinstance(value, str) else value
+    )
+
+
 class TimelineConfig(StrictModel):
     activity_start_offset_frames: int = 0
+    video_joins: list[VideoJoinConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_video_joins(self) -> TimelineConfig:
+        pairs = [(item.previous_file, item.next_file) for item in self.video_joins]
+        duplicates = sorted({pair for pair in pairs if pairs.count(pair) > 1})
+        if duplicates:
+            formatted = ", ".join(f"{previous} -> {next_}" for previous, next_ in duplicates)
+            raise ValueError(f"timeline.video_joins 不得包含重复连接: {formatted}")
+        return self
 
 
 class AppConfig(StrictModel):
     schema_version: Literal[1, 2]
+    opacity: Annotated[float, Field(ge=0, le=1)] = 1.0
     inputs: InputsConfig = Field(default_factory=InputsConfig)
     clip: ClipConfig = Field(default_factory=ClipConfig)
     timeline: TimelineConfig = Field(default_factory=TimelineConfig)

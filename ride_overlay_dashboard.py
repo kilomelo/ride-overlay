@@ -5,12 +5,13 @@ from __future__ import annotations
 import bisect
 import logging
 import math
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol
 
-from PIL import Image, ImageColor, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ride_overlay_data import (
@@ -28,6 +29,11 @@ from ride_overlay_data import (
 LOGGER = logging.getLogger("ride-overlay")
 MILES_PER_METER = 0.000621371192237334
 MIN_TRAJECTORY_BBOX_WIDTH_METERS = 1.0
+DEFAULT_TRAJECTORY_MARGIN_RATIO = 0.02
+TRAJECTORY_SIMPLIFY_LINE_WIDTH_RATIO = 0.1
+TRAJECTORY_MASK_SUPERSAMPLE = 4
+MAX_SUPERSAMPLED_MASK_PIXELS = 40_000_000
+TRAJECTORY_ANTIALIAS_EVENT_PADDING = 1.0
 
 
 class ConfigError(RideOverlayError):
@@ -61,6 +67,11 @@ class CumulativeOrigin(StrEnum):
     CLIP_START = "clip_start"
 
 
+class TrajectoryOverlapBlendMode(StrEnum):
+    UNIFORM = "uniform"
+    ACCUMULATE = "accumulate"
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -79,6 +90,10 @@ def validate_color(value: str) -> str:
     except ValueError as exc:
         raise ValueError("颜色必须使用十六进制字符") from exc
     return value.upper()
+
+
+def validate_optional_color(value: str | None) -> str | None:
+    return None if value is None else validate_color(value)
 
 
 class BackgroundConfig(StrictModel):
@@ -214,16 +229,24 @@ class TrajectoryDashboardConfig(StrictModel):
     type: Literal["trajectory"]
     id: Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]
     width: Annotated[float, Field(gt=0, le=1)]
+    margin: Annotated[float, Field(ge=-0.25, le=0.25)] = (
+        DEFAULT_TRAJECTORY_MARGIN_RATIO
+    )
     anchor: AnchorConfig
     align: Align = Align.CENTER
     update_interval_ms: Annotated[int, Field(gt=0, le=3_600_000)] = 200
     line_width: Annotated[int, Field(gt=0, le=200)] = 8
     remaining_color: str = "#FFFFFF66"
     completed_color: str = "#00E676CC"
+    overlap_blend_mode: TrajectoryOverlapBlendMode = TrajectoryOverlapBlendMode.UNIFORM
+    background_color: str | None = None
+    background_corner_radius: Annotated[int, Field(ge=0, le=4096)] = 0
     marker_image_file: str | None = None
     marker_scale: Annotated[float, Field(gt=0, le=100)] = 2.0
 
     _line_colors = field_validator("remaining_color", "completed_color")(validate_color)
+    _normalize_background = field_validator("background_color", mode="before")(blank_to_none)
+    _background_color = field_validator("background_color")(validate_optional_color)
     _normalize_marker = field_validator("marker_image_file", mode="before")(blank_to_none)
 
 
@@ -278,6 +301,29 @@ class TrajectoryRuntime:
     width_px: float
     height_px: float
     scale_px_per_meter: float
+
+
+@dataclass(frozen=True)
+class TrajectoryCoveragePlan:
+    left: int
+    top: int
+    width: int
+    height: int
+    base_layer: Image.Image
+    route_mask: Image.Image
+    events: tuple[tuple[float, int], ...]
+
+
+@dataclass
+class TrajectoryCoverageState:
+    counts: bytearray
+    next_event_index: int = 0
+    last_time_seconds: float = -math.inf
+
+    def reset(self) -> None:
+        self.counts[:] = bytes(len(self.counts))
+        self.next_event_index = 0
+        self.last_time_seconds = -math.inf
 
 
 @dataclass(frozen=True)
@@ -359,6 +405,7 @@ class ClipConfigLike(Protocol):
 
 
 class DashboardAppConfigLike(Protocol):
+    opacity: float
     output: OutputConfig
     clip: ClipConfigLike
     dashboards: list[DashboardDefinition]
@@ -423,6 +470,109 @@ def aligned_origin(
     return anchor_x - item_width * horizontal, anchor_y - item_height * vertical
 
 
+def _point_to_line_distance(
+    point: PixelTrajectoryPoint,
+    start: PixelTrajectoryPoint,
+    end: PixelTrajectoryPoint,
+) -> float:
+    delta_x = end.x - start.x
+    delta_y = end.y - start.y
+    length_squared = delta_x * delta_x + delta_y * delta_y
+    if length_squared <= 1e-12:
+        return math.hypot(point.x - start.x, point.y - start.y)
+    ratio = min(
+        1.0,
+        max(
+            0.0,
+            ((point.x - start.x) * delta_x + (point.y - start.y) * delta_y)
+            / length_squared,
+        ),
+    )
+    closest_x = start.x + delta_x * ratio
+    closest_y = start.y + delta_y * ratio
+    return math.hypot(point.x - closest_x, point.y - closest_y)
+
+
+def _simplify_trajectory_chunk(
+    points: tuple[PixelTrajectoryPoint, ...],
+    tolerance: float,
+) -> tuple[PixelTrajectoryPoint, ...]:
+    if len(points) <= 2:
+        return points
+    kept = {0, len(points) - 1}
+    pending = [(0, len(points) - 1)]
+    while pending:
+        start_index, end_index = pending.pop()
+        furthest_index = -1
+        furthest_distance = tolerance
+        for index in range(start_index + 1, end_index):
+            distance = _point_to_line_distance(
+                points[index],
+                points[start_index],
+                points[end_index],
+            )
+            if distance > furthest_distance:
+                furthest_index = index
+                furthest_distance = distance
+        if furthest_index >= 0:
+            kept.add(furthest_index)
+            pending.append((start_index, furthest_index))
+            pending.append((furthest_index, end_index))
+    return tuple(points[index] for index in sorted(kept))
+
+
+def simplify_trajectory_segment(
+    points: tuple[PixelTrajectoryPoint, ...],
+    tolerance: float,
+) -> tuple[PixelTrajectoryPoint, ...]:
+    """Simplify a rendered centerline while retaining every direction reversal."""
+
+    if len(points) <= 2 or tolerance <= 0:
+        return points
+    boundaries = [0]
+    for index in range(1, len(points) - 1):
+        previous = points[index - 1]
+        current = points[index]
+        following = points[index + 1]
+        incoming_x = current.x - previous.x
+        incoming_y = current.y - previous.y
+        outgoing_x = following.x - current.x
+        outgoing_y = following.y - current.y
+        incoming_length = math.hypot(incoming_x, incoming_y)
+        outgoing_length = math.hypot(outgoing_x, outgoing_y)
+        if incoming_length <= 1e-9 or outgoing_length <= 1e-9:
+            continue
+        if incoming_x * outgoing_x + incoming_y * outgoing_y < 0:
+            boundaries.append(index)
+    boundaries.append(len(points) - 1)
+
+    simplified: list[PixelTrajectoryPoint] = []
+    for start_index, end_index in zip(boundaries, boundaries[1:], strict=False):
+        chunk = _simplify_trajectory_chunk(
+            points[start_index : end_index + 1],
+            tolerance,
+        )
+        simplified.extend(chunk if not simplified else chunk[1:])
+    return tuple(simplified)
+
+
+def _trajectory_visual_radius(
+    dashboard: TrajectoryDashboardConfig,
+    marker_path: Path,
+) -> tuple[float, tuple[int, int]]:
+    try:
+        with Image.open(marker_path) as marker:
+            source_width, source_height = marker.size
+    except Exception as exc:
+        raise ConfigError(
+            f"无法读取轨迹仪表盘 {dashboard.id} 的当前位置图片: {exc}"
+        ) from exc
+    marker_width = max(1, round(source_width * dashboard.marker_scale))
+    marker_height = max(1, round(source_height * dashboard.marker_scale))
+    marker_radius = math.hypot(marker_width, marker_height) / 2 + 2
+    return max(dashboard.line_width / 2, marker_radius), (marker_width, marker_height)
+
+
 def _build_trajectory_runtime(
     dashboard: TrajectoryDashboardConfig,
     config: DashboardAppConfigLike,
@@ -443,9 +593,27 @@ def _build_trajectory_runtime(
 
     projected = project_trajectory(trajectory)
     requested_width_px = dashboard.width * config.output.width
+    marker_path = paths.trajectory_markers[dashboard.id]
+    visual_radius, marker_size = _trajectory_visual_radius(dashboard, marker_path)
+    horizontal_margin = requested_width_px * dashboard.margin
+    available_centerline_width = requested_width_px - 2 * (
+        horizontal_margin + visual_radius
+    )
+    if available_centerline_width <= 0:
+        raise ConfigError(
+            f"轨迹仪表盘 {dashboard.id} 的 width 太小，无法容纳 line_width="
+            f"{dashboard.line_width}、当前位置图片和 margin="
+            f"{dashboard.margin:g}"
+        )
     bbox_width_for_scale = max(projected.width_m, MIN_TRAJECTORY_BBOX_WIDTH_METERS)
-    scale = requested_width_px / bbox_width_for_scale
-    height_px = max(1.0, projected.height_m * scale)
+    scale = available_centerline_width / bbox_width_for_scale
+    centerline_width = projected.width_m * scale
+    centerline_height = projected.height_m * scale
+    height_px = max(
+        1.0,
+        (centerline_height + 2 * visual_radius)
+        / (1 - 2 * dashboard.margin),
+    )
     origin_x, origin_y = aligned_origin(
         dashboard.anchor,
         dashboard.align,
@@ -479,15 +647,17 @@ def _build_trajectory_runtime(
         )
 
     points: list[PixelTrajectoryPoint] = []
+    centerline_left = origin_x + (requested_width_px - centerline_width) / 2
+    centerline_top = origin_y + (height_px - centerline_height) / 2
     for point in projected.points:
         if projected.width_m < 1e-9:
             x = origin_x + requested_width_px / 2
         else:
-            x = origin_x + (point.x_m - projected.min_x_m) * scale
+            x = centerline_left + (point.x_m - projected.min_x_m) * scale
         if projected.height_m < 1e-9:
             y = origin_y + height_px / 2
         else:
-            y = origin_y + (projected.max_y_m - point.y_m) * scale
+            y = centerline_top + (projected.max_y_m - point.y_m) * scale
         points.append(PixelTrajectoryPoint(point.time_seconds, x, y, point.segment))
 
     segments: list[list[PixelTrajectoryPoint]] = []
@@ -496,12 +666,20 @@ def _build_trajectory_runtime(
             segments.append([])
         segments[-1].append(point)
 
+    simplification_tolerance = max(
+        0.5,
+        dashboard.line_width * TRAJECTORY_SIMPLIFY_LINE_WIDTH_RATIO,
+    )
+    render_segments = tuple(
+        simplify_trajectory_segment(tuple(segment), simplification_tolerance)
+        for segment in segments
+    )
     runtime = TrajectoryRuntime(
         config=dashboard,
         projected=projected,
-        marker_path=paths.trajectory_markers[dashboard.id],
+        marker_path=marker_path,
         points=tuple(points),
-        segments=tuple(tuple(segment) for segment in segments),
+        segments=render_segments,
         origin_x=origin_x,
         origin_y=origin_y,
         width_px=requested_width_px,
@@ -515,6 +693,8 @@ def _build_trajectory_runtime(
         "status": "ACTIVE",
         "update_interval_ms": dashboard.update_interval_ms,
         "valid_point_count": len(trajectory.points),
+        "render_point_count": sum(len(segment) for segment in render_segments),
+        "simplification_tolerance_px": simplification_tolerance,
         "segment_count": trajectory.segment_count,
         "position_break_count": len(trajectory.breaks),
         "position_breaks": [
@@ -531,6 +711,10 @@ def _build_trajectory_runtime(
         "bounding_box_width_m": projected.width_m,
         "bounding_box_height_m": projected.height_m,
         "requested_width_ratio": dashboard.width,
+        "margin_ratio": dashboard.margin,
+        "line_and_marker_included_in_render_rectangle": True,
+        "visual_radius_px": visual_radius,
+        "overlap_blend_mode": dashboard.overlap_blend_mode.value,
         "scale_px_per_meter": scale,
         "render_rectangle": {
             "x": origin_x,
@@ -541,6 +725,9 @@ def _build_trajectory_runtime(
         "overflow_edges": overflow_edges,
         "marker_image": str(paths.trajectory_markers[dashboard.id]),
         "marker_scale": dashboard.marker_scale,
+        "rendered_marker_size": {"width": marker_size[0], "height": marker_size[1]},
+        "background_color": dashboard.background_color,
+        "background_corner_radius": dashboard.background_corner_radius,
     }
     return runtime, details
 
@@ -941,16 +1128,24 @@ def _draw_rounded_paths(
     paths: list[list[tuple[float, float]]],
     line_width: int,
 ) -> Image.Image:
-    mask = Image.new("L", size, 0)
+    pixel_count = max(1, size[0] * size[1])
+    max_factor = max(1, math.floor(math.sqrt(MAX_SUPERSAMPLED_MASK_PIXELS / pixel_count)))
+    factor = min(TRAJECTORY_MASK_SUPERSAMPLE, max_factor)
+    high_resolution_size = (size[0] * factor, size[1] * factor)
+    mask = Image.new("L", high_resolution_size, 0)
     draw = ImageDraw.Draw(mask)
-    radius = line_width / 2
+    scaled_line_width = max(1, round(line_width * factor))
+    radius = scaled_line_width / 2
     for path in paths:
         if len(path) < 2:
             continue
-        draw.line(path, fill=255, width=line_width, joint="curve")
-        for x, y in (path[0], path[-1]):
+        scaled_path = [(x * factor, y * factor) for x, y in path]
+        draw.line(scaled_path, fill=255, width=scaled_line_width, joint="curve")
+        for x, y in (scaled_path[0], scaled_path[-1]):
             draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=255)
-    return mask
+    if factor == 1:
+        return mask
+    return mask.resize(size, Image.Resampling.LANCZOS)
 
 
 def _colorize_mask(mask: Image.Image, color: str) -> Image.Image:
@@ -960,14 +1155,264 @@ def _colorize_mask(mask: Image.Image, color: str) -> Image.Image:
     return layer
 
 
+def _draw_rounded_rectangle_mask(
+    size: tuple[int, int],
+    box: tuple[float, float, float, float],
+    radius: int,
+) -> Image.Image:
+    pixel_count = max(1, size[0] * size[1])
+    max_factor = max(1, math.floor(math.sqrt(MAX_SUPERSAMPLED_MASK_PIXELS / pixel_count)))
+    factor = min(TRAJECTORY_MASK_SUPERSAMPLE, max_factor)
+    high_resolution_size = (size[0] * factor, size[1] * factor)
+    mask = Image.new("L", high_resolution_size, 0)
+    draw = ImageDraw.Draw(mask)
+    scaled_box = tuple(value * factor for value in box)
+    maximum_radius = max(0.0, min(box[2] - box[0], box[3] - box[1]) / 2)
+    draw.rounded_rectangle(
+        scaled_box,
+        radius=min(radius, maximum_radius) * factor,
+        fill=255,
+    )
+    if factor == 1:
+        return mask
+    return mask.resize(size, Image.Resampling.LANCZOS)
+
+
+def _trajectory_background_layer(
+    size: tuple[int, int],
+    runtime: TrajectoryRuntime,
+    left: int,
+    top: int,
+) -> Image.Image:
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    if runtime.config.background_color is None:
+        return layer
+    box = (
+        runtime.origin_x - left,
+        runtime.origin_y - top,
+        runtime.origin_x + runtime.width_px - left,
+        runtime.origin_y + runtime.height_px - top,
+    )
+    mask = _draw_rounded_rectangle_mask(
+        size,
+        box,
+        runtime.config.background_corner_radius,
+    )
+    return _colorize_mask(mask, runtime.config.background_color)
+
+
+def _trajectory_visual_bounds(
+    runtime: TrajectoryRuntime,
+    frame_width: int,
+    frame_height: int,
+    padding: float,
+) -> tuple[int, int, int, int]:
+    """Return bounds containing the dashboard rectangle and overflowing visuals."""
+
+    point_x = [point.x for point in runtime.points]
+    point_y = [point.y for point in runtime.points]
+    left = max(0, math.floor(min(runtime.origin_x, min(point_x) - padding)))
+    top = max(0, math.floor(min(runtime.origin_y, min(point_y) - padding)))
+    right = min(
+        frame_width,
+        math.ceil(
+            max(runtime.origin_x + runtime.width_px, max(point_x) + padding)
+        ),
+    )
+    bottom = min(
+        frame_height,
+        math.ceil(
+            max(runtime.origin_y + runtime.height_px, max(point_y) + padding)
+        ),
+    )
+    return left, top, right, bottom
+
+
+def _capsule_pixel_intervals(
+    size: tuple[int, int],
+    start: tuple[float, float],
+    end: tuple[float, float],
+    start_time: float,
+    end_time: float,
+    line_width: int,
+) -> list[tuple[int, float, float]]:
+    """Rasterize an edge and return when its moving round cap covers each pixel."""
+
+    width, height = size
+    start_x, start_y = start
+    end_x, end_y = end
+    delta_x = end_x - start_x
+    delta_y = end_y - start_y
+    length_squared = delta_x * delta_x + delta_y * delta_y
+    # Include the antialiased fringe; the final completed alpha is still
+    # clipped by route_mask, so this only prevents the base color leaking out
+    # as a one-pixel halo around completed accumulated paths.
+    radius = line_width / 2 + TRAJECTORY_ANTIALIAS_EVENT_PADDING
+    radius_squared = radius * radius
+    left = max(0, math.floor(min(start_x, end_x) - radius))
+    top = max(0, math.floor(min(start_y, end_y) - radius))
+    right = min(width, math.ceil(max(start_x, end_x) + radius + 1))
+    bottom = min(height, math.ceil(max(start_y, end_y) + radius + 1))
+    pixels: list[tuple[int, float, float]] = []
+    for y in range(top, bottom):
+        pixel_y = y + 0.5
+        for x in range(left, right):
+            pixel_x = x + 0.5
+            if length_squared <= 1e-12:
+                distance_squared = (pixel_x - start_x) ** 2 + (pixel_y - start_y) ** 2
+                if distance_squared <= radius_squared:
+                    pixels.append((y * width + x, start_time, end_time))
+                continue
+
+            offset_x = start_x - pixel_x
+            offset_y = start_y - pixel_y
+            linear = 2 * (offset_x * delta_x + offset_y * delta_y)
+            constant = offset_x * offset_x + offset_y * offset_y - radius_squared
+            discriminant = linear * linear - 4 * length_squared * constant
+            if discriminant < 0:
+                continue
+            root = math.sqrt(max(0.0, discriminant))
+            entry_ratio = max(0.0, (-linear - root) / (2 * length_squared))
+            exit_ratio = min(1.0, (-linear + root) / (2 * length_squared))
+            if entry_ratio > exit_ratio:
+                continue
+            entry_time = start_time + (end_time - start_time) * entry_ratio
+            exit_time = start_time + (end_time - start_time) * exit_ratio
+            pixels.append((y * width + x, entry_time, exit_time))
+    return pixels
+
+
+def build_trajectory_coverage_plan(
+    runtime: TrajectoryRuntime,
+    frame_width: int,
+    frame_height: int,
+) -> TrajectoryCoveragePlan | None:
+    """Precompute temporal visits for pixels covered by the visible trajectory stroke."""
+
+    started_at = time.perf_counter()
+    left, top, right, bottom = _trajectory_visual_bounds(
+        runtime,
+        frame_width,
+        frame_height,
+        runtime.config.line_width / 2 + 2,
+    )
+    if right <= left or bottom <= top:
+        return None
+    size = (right - left, bottom - top)
+    local_paths = [
+        [(point.x - left, point.y - top) for point in segment]
+        for segment in runtime.segments
+    ]
+    base_mask = _draw_rounded_paths(size, local_paths, runtime.config.line_width)
+    base_layer = _trajectory_background_layer(size, runtime, left, top)
+    base_layer.alpha_composite(_colorize_mask(base_mask, runtime.config.remaining_color))
+
+    pixel_count = size[0] * size[1]
+    route_coverage = base_mask.tobytes()
+    last_seen_segments = [-1] * pixel_count
+    last_exit_times = [-math.inf] * pixel_count
+    visit_counts = bytearray(pixel_count)
+    events: list[tuple[float, int]] = []
+    for segment_number, segment in enumerate(runtime.segments):
+        for start_point, end_point in zip(segment, segment[1:], strict=False):
+            edge_pixels = _capsule_pixel_intervals(
+                size,
+                (start_point.x - left, start_point.y - top),
+                (end_point.x - left, end_point.y - top),
+                start_point.time_seconds,
+                end_point.time_seconds,
+                runtime.config.line_width,
+            )
+            new_events: list[tuple[float, int]] = []
+            for pixel_index, entry_time, exit_time in edge_pixels:
+                if route_coverage[pixel_index] == 0:
+                    continue
+                same_continuous_visit = (
+                    last_seen_segments[pixel_index] == segment_number
+                    and entry_time <= last_exit_times[pixel_index] + 1e-9
+                )
+                if not same_continuous_visit:
+                    new_events.append((entry_time, pixel_index))
+                    visit_counts[pixel_index] = min(
+                        255, visit_counts[pixel_index] + 1
+                    )
+                last_seen_segments[pixel_index] = segment_number
+                last_exit_times[pixel_index] = max(
+                    last_exit_times[pixel_index], exit_time
+                )
+            new_events.sort(key=lambda item: item[0])
+            events.extend(new_events)
+    plan = TrajectoryCoveragePlan(
+        left=left,
+        top=top,
+        width=size[0],
+        height=size[1],
+        base_layer=base_layer,
+        route_mask=base_mask,
+        events=tuple(events),
+    )
+    LOGGER.info(
+        "轨迹仪表盘 %s 累计重叠预计算完成: region=%dx%d route_pixels=%d "
+        "repeated_pixels=%d max_visits=%d events=%d elapsed=%.3fs",
+        runtime.config.id,
+        plan.width,
+        plan.height,
+        pixel_count - base_mask.histogram()[0],
+        sum(count > 1 for count in visit_counts),
+        max(visit_counts, default=0),
+        len(plan.events),
+        time.perf_counter() - started_at,
+    )
+    return plan
+
+
+def render_accumulated_trajectory_layer(
+    plan: TrajectoryCoveragePlan,
+    state: TrajectoryCoverageState,
+    time_seconds: float,
+    completed_color: str,
+) -> Image.Image:
+    """Render the complete route base plus completed color for every distinct visit."""
+
+    if time_seconds < state.last_time_seconds - 1e-9:
+        state.reset()
+    while state.next_event_index < len(plan.events):
+        event_time, pixel_index = plan.events[state.next_event_index]
+        if event_time > time_seconds + 1e-9:
+            break
+        state.counts[pixel_index] = min(255, state.counts[pixel_index] + 1)
+        state.next_event_index += 1
+    state.last_time_seconds = time_seconds
+
+    red, green, blue, alpha = rgba_color(completed_color)
+    opacity = alpha / 255
+    alpha_lookup = [
+        round(255 * (1 - (1 - opacity) ** visit_count))
+        for visit_count in range(256)
+    ]
+    count_image = Image.frombytes("L", (plan.width, plan.height), bytes(state.counts))
+    completed_alpha = ImageChops.multiply(
+        count_image.point(alpha_lookup),
+        plan.route_mask,
+    )
+    completed_layer = Image.new("RGBA", (plan.width, plan.height), (red, green, blue, 0))
+    completed_layer.putalpha(completed_alpha)
+    layer = plan.base_layer.copy()
+    layer.alpha_composite(completed_layer)
+    return layer
+
+
 class FrameRenderer:
     def __init__(self, config: DashboardAppConfigLike, paths: RenderPathsLike) -> None:
         self.width = config.output.width
         self.height = config.output.height
+        self.opacity = config.opacity
         self.font_path = paths.font
         self.fonts: dict[int, ImageFont.FreeTypeFont] = {}
         self.marker_images: dict[tuple[Path, float], Image.Image] = {}
         self.trajectory_layers: dict[str, tuple[float, Image.Image, tuple[int, int]]] = {}
+        self.trajectory_coverage_plans: dict[str, TrajectoryCoveragePlan] = {}
+        self.trajectory_coverage_states: dict[str, TrajectoryCoverageState] = {}
         self.heart_images: dict[tuple[Path, int, int], Image.Image] = {}
         self.heartbeat_states: dict[str, HeartbeatAnimationState] = {}
         if config.output.background.mode == BackgroundMode.TRANSPARENT:
@@ -1092,13 +1537,17 @@ class FrameRenderer:
         if runtime.projected.width_m < 1e-9:
             x = runtime.origin_x + runtime.width_px / 2
         else:
-            x = runtime.origin_x + (sample.x_m - runtime.projected.min_x_m) * (
+            centerline_width = runtime.projected.width_m * runtime.scale_px_per_meter
+            centerline_left = runtime.origin_x + (runtime.width_px - centerline_width) / 2
+            x = centerline_left + (sample.x_m - runtime.projected.min_x_m) * (
                 runtime.scale_px_per_meter
             )
         if runtime.projected.height_m < 1e-9:
             y = runtime.origin_y + runtime.height_px / 2
         else:
-            y = runtime.origin_y + (runtime.projected.max_y_m - sample.y_m) * (
+            centerline_height = runtime.projected.height_m * runtime.scale_px_per_meter
+            centerline_top = runtime.origin_y + (runtime.height_px - centerline_height) / 2
+            y = centerline_top + (runtime.projected.max_y_m - sample.y_m) * (
                 runtime.scale_px_per_meter
             )
         return x, y
@@ -1125,24 +1574,80 @@ class FrameRenderer:
             )
             marker_center = self._trajectory_xy(runtime, sample)
 
+        if runtime.config.overlap_blend_mode == TrajectoryOverlapBlendMode.ACCUMULATE:
+            plans = getattr(self, "trajectory_coverage_plans", None)
+            if plans is None:
+                plans = {}
+                self.trajectory_coverage_plans = plans
+            plan = plans.get(runtime.config.id)
+            if plan is None:
+                plan = build_trajectory_coverage_plan(runtime, self.width, self.height)
+                if plan is None:
+                    return
+                plans[runtime.config.id] = plan
+
+            states = getattr(self, "trajectory_coverage_states", None)
+            if states is None:
+                states = {}
+                self.trajectory_coverage_states = states
+            state = states.get(runtime.config.id)
+            if state is None or len(state.counts) != plan.width * plan.height:
+                state = TrajectoryCoverageState(bytearray(plan.width * plan.height))
+                states[runtime.config.id] = state
+            route_layer = render_accumulated_trajectory_layer(
+                plan,
+                state,
+                time_seconds,
+                runtime.config.completed_color,
+            )
+            rendered = self._compose_trajectory_layer(
+                route_layer,
+                (plan.left, plan.top),
+                marker,
+                marker_center,
+            )
+            if rendered is None:
+                return
+            layer, destination = rendered
+            self.trajectory_layers[runtime.config.id] = (
+                time_seconds,
+                layer,
+                destination,
+            )
+            frame.alpha_composite(layer, dest=destination)
+            return
+
         marker_padding = (
             math.hypot(marker.width, marker.height) / 2 + 2 if marker is not None else 0
         )
         padding = max(runtime.config.line_width / 2 + 2, marker_padding)
-        left = max(0, math.floor(runtime.origin_x - padding))
-        top = max(0, math.floor(runtime.origin_y - padding))
-        right = min(self.width, math.ceil(runtime.origin_x + runtime.width_px + padding))
-        bottom = min(self.height, math.ceil(runtime.origin_y + runtime.height_px + padding))
+        left, top, right, bottom = _trajectory_visual_bounds(
+            runtime,
+            self.width,
+            self.height,
+            padding,
+        )
         if right <= left or bottom <= top:
             return
 
-        completed, remaining = trajectory_paths_at(runtime, time_seconds)
+        completed, _remaining = trajectory_paths_at(runtime, time_seconds)
+        full_route = [
+            [(point.x, point.y) for point in segment]
+            for segment in runtime.segments
+        ]
         local_completed = [[(x - left, y - top) for x, y in path] for path in completed]
-        local_remaining = [[(x - left, y - top) for x, y in path] for path in remaining]
+        local_full_route = [[(x - left, y - top) for x, y in path] for path in full_route]
         layer_size = (right - left, bottom - top)
-        remaining_mask = _draw_rounded_paths(layer_size, local_remaining, runtime.config.line_width)
+        full_route_mask = _draw_rounded_paths(
+            layer_size,
+            local_full_route,
+            runtime.config.line_width,
+        )
         completed_mask = _draw_rounded_paths(layer_size, local_completed, runtime.config.line_width)
-        layer = _colorize_mask(remaining_mask, runtime.config.remaining_color)
+        layer = _trajectory_background_layer(layer_size, runtime, left, top)
+        layer.alpha_composite(
+            _colorize_mask(full_route_mask, runtime.config.remaining_color)
+        )
         layer.alpha_composite(_colorize_mask(completed_mask, runtime.config.completed_color))
         if marker is not None and marker_center is not None:
             marker_x = round(marker_center[0] - marker.width / 2 - left)
@@ -1160,6 +1665,52 @@ class FrameRenderer:
         destination = (left, top)
         self.trajectory_layers[runtime.config.id] = (time_seconds, layer, destination)
         frame.alpha_composite(layer, dest=destination)
+
+    def _compose_trajectory_layer(
+        self,
+        route_layer: Image.Image,
+        route_destination: tuple[int, int],
+        marker: Image.Image | None,
+        marker_center: tuple[float, float] | None,
+    ) -> tuple[Image.Image, tuple[int, int]] | None:
+        """Combine a clipped route layer and its marker into one cacheable image."""
+
+        route_left, route_top = route_destination
+        left = route_left
+        top = route_top
+        right = route_left + route_layer.width
+        bottom = route_top + route_layer.height
+        marker_left = marker_top = 0
+        if marker is not None and marker_center is not None:
+            marker_left = round(marker_center[0] - marker.width / 2)
+            marker_top = round(marker_center[1] - marker.height / 2)
+            left = min(left, marker_left)
+            top = min(top, marker_top)
+            right = max(right, marker_left + marker.width)
+            bottom = max(bottom, marker_top + marker.height)
+
+        left = max(0, left)
+        top = max(0, top)
+        right = min(self.width, right)
+        bottom = min(self.height, bottom)
+        if right <= left or bottom <= top:
+            return None
+
+        layer = Image.new("RGBA", (right - left, bottom - top), (0, 0, 0, 0))
+        self._alpha_composite_clipped(
+            layer,
+            route_layer,
+            route_left - left,
+            route_top - top,
+        )
+        if marker is not None and marker_center is not None:
+            self._alpha_composite_clipped(
+                layer,
+                marker,
+                marker_left - left,
+                marker_top - top,
+            )
+        return layer, (left, top)
 
     def dashboard_bounds(
         self,
@@ -1250,6 +1801,9 @@ class FrameRenderer:
         if self.dashboard_background is not None:
             frame.alpha_composite(self.dashboard_background)
         self._draw_dashboards(frame, runtimes, texts, preview=preview)
+        if self.opacity < 1:
+            alpha = frame.getchannel("A")
+            frame.putalpha(alpha.point(lambda value: round(value * self.opacity)))
         return frame
 
     def render(
@@ -1265,7 +1819,6 @@ class FrameRenderer:
         )
         if frame.size != (self.width, self.height):
             frame = frame.resize((self.width, self.height), Image.Resampling.LANCZOS)
-        if self.dashboard_background is not None:
-            frame.alpha_composite(self.dashboard_background)
-        self._draw_dashboards(frame, runtimes, texts, preview=preview)
+        overlay = self.render_overlay(runtimes, texts, preview=preview)
+        frame.alpha_composite(overlay)
         return frame

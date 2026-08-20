@@ -5,8 +5,9 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import Qt, QThread, Slot
-from PySide6.QtGui import QCloseEvent, QIcon, QPixmap, QTransform
+from PySide6.QtGui import QCloseEvent, QIcon, QKeySequence, QPixmap, QShortcut, QTransform
 from PySide6.QtWidgets import (
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -28,8 +29,9 @@ from ride_overlay_gui.project import EditorProject
 from ride_overlay_gui.timeline import (
     RepeatStepButton,
     TimelineWidget,
-    format_clock,
     format_offset_frames,
+    format_timecode,
+    frame_step_target,
 )
 
 
@@ -55,10 +57,17 @@ class EditorWindow(QMainWindow):
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.canvas, 1)
 
-        alignment_row = QHBoxLayout()
-        alignment_row.addStretch(1)
+        controls = QGridLayout()
+        controls.setHorizontalSpacing(8)
+        controls.setColumnStretch(0, 1)
+        controls.setColumnStretch(2, 1)
+
+        alignment_panel = QWidget(root)
+        alignment_controls = QHBoxLayout(alignment_panel)
+        alignment_controls.setContentsMargins(0, 0, 0, 0)
+        alignment_controls.setSpacing(8)
         self.offset_label = QLabel()
-        alignment_row.addWidget(self.offset_label)
+        alignment_controls.addWidget(self.offset_label)
         self.offset_left = RepeatStepButton(-1, self)
         self.offset_right = RepeatStepButton(1, self)
         align_pixmap = QPixmap(str(image_asset("align_btn.png")))
@@ -67,31 +76,40 @@ class EditorWindow(QMainWindow):
         for button in (self.offset_left, self.offset_right):
             button.setFixedSize(34, 34)
             button.setIconSize(button.size() * 0.65)
-        alignment_row.addWidget(self.offset_left)
-        alignment_row.addWidget(self.offset_right)
-        alignment_row.addStretch(1)
-        layout.addLayout(alignment_row)
+        alignment_controls.addWidget(self.offset_left)
+        alignment_controls.addWidget(self.offset_right)
+        alignment_controls.addStretch(1)
+        controls.addWidget(alignment_panel, 0, 0)
 
-        self.timeline_widget = TimelineWidget(self)
-        layout.addWidget(self.timeline_widget)
-
-        transport = QHBoxLayout()
         self.play_button = QToolButton(self)
         self.play_button.setFixedSize(62, 62)
         self.play_button.setIconSize(self.play_button.size())
-        transport.addWidget(self.play_button)
+        controls.addWidget(self.play_button, 0, 1)
+
+        status_panel = QWidget(root)
+        status_controls = QHBoxLayout(status_panel)
+        status_controls.setContentsMargins(0, 0, 0, 0)
+        status_controls.setSpacing(8)
+        status_controls.addStretch(1)
         self.time_label = QLabel()
-        transport.addWidget(self.time_label)
-        transport.addStretch(1)
+        self.time_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        status_controls.addWidget(self.time_label)
         self.export_button = QPushButton("导出完整视频", self)
         self.export_button.setMinimumHeight(38)
-        transport.addWidget(self.export_button)
-        layout.addLayout(transport)
+        status_controls.addWidget(self.export_button)
+        controls.addWidget(status_panel, 0, 2)
+        layout.addLayout(controls)
+
+        self.timeline_widget = TimelineWidget(self)
+        layout.addWidget(self.timeline_widget)
 
         self.playback = VirtualPlaybackController(self.canvas.video_item, self)
         self.playback.set_timeline(model.video_timeline)
         self.config_sync = ConfigSynchronizer(model.project_dir, self)
         self._connect_signals()
+        self._configure_shortcuts()
         self._refresh_timeline_model()
         self._set_playing_ui(False)
         self._on_position_changed(0.0)
@@ -99,7 +117,7 @@ class EditorWindow(QMainWindow):
             self.statusBar().showMessage("未找到视频：仍可在黑色画布上调整仪表盘，但不能导出成片")
 
     def _connect_signals(self) -> None:
-        self.play_button.clicked.connect(self.playback.toggle)
+        self.play_button.clicked.connect(self._toggle_playback)
         self.playback.positionChanged.connect(self._on_position_changed)
         self.playback.playingChanged.connect(self._set_playing_ui)
         self.playback.errorOccurred.connect(self._show_error)
@@ -113,6 +131,21 @@ class EditorWindow(QMainWindow):
         self.config_sync.configError.connect(self._config_error)
         self.config_sync.writeError.connect(self._show_error)
         self.export_button.clicked.connect(self._start_export)
+
+    def _configure_shortcuts(self) -> None:
+        context = Qt.ShortcutContext.WidgetWithChildrenShortcut
+        self.play_pause_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
+        self.play_pause_shortcut.setContext(context)
+        self.play_pause_shortcut.setAutoRepeat(False)
+        self.play_pause_shortcut.activated.connect(self._toggle_playback)
+
+        self.previous_frame_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Left), self)
+        self.previous_frame_shortcut.setContext(context)
+        self.previous_frame_shortcut.activated.connect(lambda: self._step_frame(-1))
+
+        self.next_frame_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Right), self)
+        self.next_frame_shortcut.setContext(context)
+        self.next_frame_shortcut.activated.connect(lambda: self._step_frame(1))
 
     def _refresh_timeline_model(self) -> None:
         self.timeline_widget.set_timeline(
@@ -131,9 +164,10 @@ class EditorWindow(QMainWindow):
         self.current_time_seconds = min(max(seconds, 0.0), self.model.display_duration_seconds)
         self.timeline_widget.set_current_time(self.current_time_seconds)
         self.canvas.refresh(self.current_time_seconds)
+        fps = self.model.config.output.fps
         self.time_label.setText(
-            f"当前时间 {format_clock(self.current_time_seconds)} / "
-            f"视频总时长 {format_clock(self.model.display_duration_seconds)}"
+            f"当前时间 {format_timecode(self.current_time_seconds, fps)} / "
+            f"视频总时长 {format_timecode(self.model.display_duration_seconds, fps)}"
         )
 
     def _set_playing_ui(self, playing: bool) -> None:
@@ -147,6 +181,22 @@ class EditorWindow(QMainWindow):
             self.playback.seek(seconds)
         else:
             self._on_position_changed(seconds)
+
+    def _toggle_playback(self) -> None:
+        if self._export_thread is None:
+            self.playback.toggle()
+
+    def _step_frame(self, direction: int) -> None:
+        if self._export_thread is not None:
+            return
+        self.playback.pause()
+        target = frame_step_target(
+            self.current_time_seconds,
+            self.model.display_duration_seconds,
+            self.model.config.output.fps,
+            direction,
+        )
+        self._seek(target)
 
     def _select_dashboard(self, dashboard_id: str | None) -> None:
         if dashboard_id is not None:
@@ -166,7 +216,7 @@ class EditorWindow(QMainWindow):
     def _reload_external_config(self) -> None:
         was_playing = self.playback.is_playing
         previous_time = self.current_time_seconds
-        previous_paths = self.model.video_timeline.paths
+        previous_timeline = self.model.video_timeline
         try:
             model = EditorProject.load(self.model.project_dir, previous=self.model)
         except Exception as exc:
@@ -174,7 +224,7 @@ class EditorWindow(QMainWindow):
             return
         self.model = model
         self.canvas.set_model(model)
-        if model.video_timeline.paths != previous_paths:
+        if model.video_timeline != previous_timeline:
             self.playback.set_timeline(model.video_timeline)
         self._refresh_timeline_model()
         self._seek(min(previous_time, model.display_duration_seconds))

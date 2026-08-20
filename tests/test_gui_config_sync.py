@@ -7,7 +7,11 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from ride_overlay_gui.config_sync import ConfigSynchronizer
-from ride_overlay_gui.timeline import format_offset_frames
+from ride_overlay_gui.timeline import (
+    format_offset_frames,
+    format_timecode,
+    frame_step_target,
+)
 
 
 def _config() -> dict:
@@ -76,6 +80,17 @@ def test_gui_writes_offset_as_integer_frames(tmp_path: Path, qtbot) -> None:
 def test_offset_display_uses_frames_for_integer_fps() -> None:
     assert format_offset_frames(4979, 30) == "+00:02:45:29"
     assert format_offset_frames(-1, 30) == "-00:00:00:01"
+
+
+def test_video_time_display_includes_frame_number() -> None:
+    assert format_timecode(1 * 3600 + 32 * 60 + 45 + 26 / 30, 30) == "01:32:45:26"
+    assert format_timecode(0.033, 30) == "00:00:00:01"
+
+
+def test_frame_step_snaps_backend_milliseconds_to_output_frames() -> None:
+    assert frame_step_target(0.033, 10.0, 30, 1) == 2 / 30
+    assert frame_step_target(0.033, 10.0, 30, -1) == 0.0
+    assert frame_step_target(10.0, 10.0, 30, 1) == 10.0
 
 
 def test_external_valid_and_invalid_edits_are_reported(tmp_path: Path, qtbot) -> None:

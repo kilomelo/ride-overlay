@@ -20,6 +20,20 @@ from ride_overlay_dashboard import (
 )
 from ride_overlay_data import ActivityData, read_activity
 from ride_overlay_video import VideoTimeline
+from ride_overlay_video_analysis import prepare_editor_video_configuration
+
+
+def _configured_overlap_frames(config: AppConfig, paths: ResolvedPaths) -> tuple[int, ...]:
+    project = paths.project
+    names = [path.relative_to(project).as_posix() for path in paths.videos]
+    configured = {
+        (item.previous_file, item.next_file): item.overlap_frames
+        for item in config.timeline.video_joins
+    }
+    return tuple(
+        configured.get((previous, next_), 0)
+        for previous, next_ in zip(names, names[1:], strict=False)
+    )
 
 
 @dataclass(frozen=True)
@@ -48,6 +62,7 @@ class EditorProject:
         previous: EditorProject | None = None,
     ) -> EditorProject:
         project = project_dir.expanduser().resolve()
+        prepare_editor_video_configuration(project)
         config = load_config(project)
         paths = resolve_paths(project, config)
         activity = (
@@ -58,10 +73,13 @@ class EditorProject:
         clip = ClipRange(0.0, activity.duration_seconds)
         runtimes = build_dashboard_runtimes(config, activity, clip, paths=paths)
         renderer = FrameRenderer(config, paths)
+        overlap_frames = _configured_overlap_frames(config, paths)
         timeline = (
             previous.video_timeline
-            if previous is not None and previous.video_timeline.paths == paths.videos
-            else VideoTimeline.from_paths(paths.videos)
+            if previous is not None
+            and previous.video_timeline.paths == paths.videos
+            and previous.video_timeline.overlap_frames == overlap_frames
+            else VideoTimeline.from_paths(paths.videos, overlap_frames)
         )
         return cls(project, config, paths, activity, clip, runtimes, renderer, timeline)
 

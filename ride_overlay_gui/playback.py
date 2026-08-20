@@ -35,12 +35,12 @@ class VirtualPlaybackController(QObject):
         self.audio_output: QAudioOutput | None = None
         if _player is None:
             self.audio_output = QAudioOutput(self)
-            self.audio_output.setMuted(True)
             self.player.setAudioOutput(self.audio_output)
         self.player.setVideoOutput(video_output)
         self.timeline = VideoTimeline((), 0.0)
         self._segment_index = -1
         self._pending_seek: _PendingSeek | None = None
+        self._audio_suppressed_for_priming = False
         # This is the state requested by the user. The backend temporarily
         # enters Stopped while changing sources, and briefly enters Playing to
         # decode a still frame for a paused cross-segment seek; neither should
@@ -72,8 +72,17 @@ class VirtualPlaybackController(QObject):
         self._desired_playing = playing
         self.playingChanged.emit(playing)
 
+    def _suppress_audio_for_priming(self, suppressed: bool) -> None:
+        suppressed = bool(suppressed)
+        if self._audio_suppressed_for_priming == suppressed:
+            return
+        self._audio_suppressed_for_priming = suppressed
+        if self.audio_output is not None:
+            self.audio_output.setMuted(suppressed)
+
     def set_timeline(self, timeline: VideoTimeline) -> None:
         self._set_desired_playing(False)
+        self._suppress_audio_for_priming(False)
         self.player.stop()
         self.timeline = timeline
         self._segment_index = -1
@@ -122,6 +131,7 @@ class VirtualPlaybackController(QObject):
         if self.current_position() >= self.timeline.duration_seconds - 0.001:
             self.seek(0.0)
         self._set_desired_playing(True)
+        self._suppress_audio_for_priming(False)
         if self._pending_seek is not None:
             self._try_apply_pending_seek()
         else:
@@ -131,6 +141,8 @@ class VirtualPlaybackController(QObject):
         self._set_desired_playing(False)
         if self._pending_seek is None:
             self.player.pause()
+        else:
+            self._suppress_audio_for_priming(True)
         # During a cross-segment seek the backend may need to play briefly to
         # decode the target frame. _finish_pending_seek pauses it once that
         # frame reaches the video sink.
@@ -149,7 +161,8 @@ class VirtualPlaybackController(QObject):
             local_seconds = self._pending_seek.local_ms / 1000
         else:
             local_seconds = self.player.position() / 1000
-        return min(self.timeline.duration_seconds, segment.start_seconds + local_seconds)
+        timeline_seconds = segment.start_seconds + local_seconds - segment.source_start_seconds
+        return min(self.timeline.duration_seconds, timeline_seconds)
 
     def _try_apply_pending_seek(self) -> None:
         pending = self._pending_seek
@@ -172,6 +185,7 @@ class VirtualPlaybackController(QObject):
         self.player.setPosition(pending.local_ms)
         # Playing is also required when the logical state is paused: a newly
         # loaded source otherwise does not necessarily decode a visible frame.
+        self._suppress_audio_for_priming(not self._desired_playing)
         self.player.play()
 
     @staticmethod
@@ -198,15 +212,34 @@ class VirtualPlaybackController(QObject):
             return
         segment = self.timeline.segments[self._segment_index]
         self._pending_seek = None
-        self.positionChanged.emit(segment.start_seconds + pending.local_ms / 1000)
+        self.positionChanged.emit(
+            segment.start_seconds + pending.local_ms / 1000 - segment.source_start_seconds
+        )
         if not self._desired_playing:
             self.player.pause()
+        self._suppress_audio_for_priming(False)
 
     def _on_position_changed(self, local_ms: int) -> None:
         if self._segment_index < 0 or self._pending_seek is not None:
             return
         segment = self.timeline.segments[self._segment_index]
-        self.positionChanged.emit(segment.start_seconds + local_ms / 1000)
+        next_index = self._segment_index + 1
+        is_trimmed_join = (
+            next_index < len(self.timeline.segments)
+            and segment.effective_source_end_seconds < segment.info.duration_seconds
+        )
+        frame_seconds = 1.0 / segment.info.fps if segment.info.fps else 0.0
+        switch_threshold_ms = round(
+            (segment.effective_source_end_seconds - frame_seconds / 2) * 1000
+        )
+        if self._desired_playing and is_trimmed_join and local_ms >= switch_threshold_ms:
+            self.positionChanged.emit(segment.end_seconds)
+            self._switch_segment(next_index, 0)
+            return
+        timeline_seconds = (
+            segment.start_seconds + local_ms / 1000 - segment.source_start_seconds
+        )
+        self.positionChanged.emit(min(timeline_seconds, segment.end_seconds))
 
     def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
         # Ignore state changes caused by setSource and paused-frame priming.
@@ -246,5 +279,6 @@ class VirtualPlaybackController(QObject):
 
     def _on_error(self, _error: QMediaPlayer.Error, message: str) -> None:
         self._pending_seek = None
+        self._suppress_audio_for_priming(False)
         self._set_desired_playing(False)
         self.errorOccurred.emit(message or "视频播放失败")

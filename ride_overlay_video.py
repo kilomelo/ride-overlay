@@ -150,10 +150,20 @@ class VideoSegment:
     info: VideoInfo
     start_seconds: float
     end_seconds: float
+    source_start_seconds: float = 0.0
+    source_end_seconds: float | None = None
+
+    @property
+    def effective_source_end_seconds(self) -> float:
+        return (
+            self.info.duration_seconds
+            if self.source_end_seconds is None
+            else self.source_end_seconds
+        )
 
     @property
     def duration_seconds(self) -> float:
-        return self.info.duration_seconds
+        return self.effective_source_end_seconds - self.source_start_seconds
 
 
 @dataclass(frozen=True)
@@ -169,13 +179,49 @@ class VideoTimeline:
     duration_seconds: float
 
     @classmethod
-    def from_paths(cls, paths: Iterable[Path]) -> VideoTimeline:
+    def from_paths(
+        cls,
+        paths: Iterable[Path],
+        overlap_frames: Iterable[int] | None = None,
+    ) -> VideoTimeline:
+        path_list = list(paths)
+        overlaps = list(overlap_frames or ())
+        expected_overlap_count = max(0, len(path_list) - 1)
+        if overlap_frames is None:
+            overlaps = [0] * expected_overlap_count
+        elif len(overlaps) != expected_overlap_count:
+            raise VideoError(
+                f"视频连接重叠帧数量应为 {expected_overlap_count} 项，实际为 {len(overlaps)} 项"
+            )
+        invalid_overlap = any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in overlaps
+        )
+        if invalid_overlap:
+            raise VideoError("视频连接重叠帧数必须是非负整数")
+
         segments: list[VideoSegment] = []
         cursor = 0.0
-        for path in paths:
+        for index, path in enumerate(path_list):
             info = probe_video(path)
-            end = cursor + info.duration_seconds
-            segments.append(VideoSegment(info=info, start_seconds=cursor, end_seconds=end))
+            overlap = overlaps[index] if index < len(overlaps) else 0
+            if overlap and info.fps is None:
+                raise VideoError(f"无法按帧裁切 {info.path.name}：视频帧率未知")
+            overlap_seconds = overlap / info.fps if info.fps is not None else 0.0
+            source_end = info.duration_seconds - overlap_seconds
+            if source_end <= 0:
+                raise VideoError(
+                    f"{info.path.name} 的 overlap_frames={overlap} 超过或等于视频总时长"
+                )
+            end = cursor + source_end
+            segments.append(
+                VideoSegment(
+                    info=info,
+                    start_seconds=cursor,
+                    end_seconds=end,
+                    source_end_seconds=source_end,
+                )
+            )
             cursor = end
         return cls(tuple(segments), cursor)
 
@@ -187,6 +233,14 @@ class VideoTimeline:
     def join_times(self) -> tuple[float, ...]:
         return tuple(segment.start_seconds for segment in self.segments[1:])
 
+    @property
+    def overlap_frames(self) -> tuple[int, ...]:
+        values: list[int] = []
+        for segment in self.segments[:-1]:
+            trimmed_seconds = segment.info.duration_seconds - segment.effective_source_end_seconds
+            values.append(round(trimmed_seconds * (segment.info.fps or 0.0)))
+        return tuple(values)
+
     def locate(self, global_seconds: float) -> SegmentPosition:
         if not self.segments:
             raise VideoError("视频时间轴为空")
@@ -194,5 +248,8 @@ class VideoTimeline:
         starts = [segment.start_seconds for segment in self.segments]
         index = min(bisect.bisect_right(starts, clamped) - 1, len(self.segments) - 1)
         segment = self.segments[index]
-        local = min(max(clamped - segment.start_seconds, 0.0), segment.duration_seconds)
+        local = min(
+            max(clamped - segment.start_seconds + segment.source_start_seconds, 0.0),
+            segment.effective_source_end_seconds,
+        )
         return SegmentPosition(index=index, segment=segment, local_seconds=local)

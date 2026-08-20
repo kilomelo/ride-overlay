@@ -1,5 +1,6 @@
 {
   "schema_version": 2,
+  "opacity": 1.0,
   "inputs": {
     "activity_file": null,
     "font_file": null,
@@ -12,7 +13,8 @@
     "cumulative_origin": "activity_start"
   },
   "timeline": {
-    "activity_start_offset_frames": 0
+    "activity_start_offset_frames": 0,
+    "video_joins": []
   },
   "output": {
     "filename": null,
@@ -111,6 +113,7 @@
       "type": "trajectory",
       "id": "route",
       "width": 0.3,
+      "margin": 0.02,
       "anchor": {
         "x": 0.95,
         "y": 0.05
@@ -120,6 +123,9 @@
       "line_width": 8,
       "remaining_color": "#FFFFFF66",
       "completed_color": "#00E676CC",
+      "overlap_blend_mode": "uniform",
+      "background_color": null,
+      "background_corner_radius": 24,
       "marker_image_file": null,
       "marker_scale": 2.0
     },

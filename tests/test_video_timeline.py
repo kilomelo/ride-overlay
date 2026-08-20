@@ -49,3 +49,23 @@ def test_virtual_timeline_maps_join_to_the_later_segment(
     assert at_join.index == 1
     assert at_join.local_seconds == pytest.approx(0.0)
     assert timeline.locate(99).local_seconds == pytest.approx(2.0)
+
+
+def test_virtual_timeline_trims_previous_tail_by_overlap_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = [tmp_path / "a.mp4", tmp_path / "b.mp4"]
+
+    def fake_probe(path: Path) -> VideoInfo:
+        return VideoInfo(path, 10.0, 1920, 1080, 20.0, True)
+
+    monkeypatch.setattr(ride_overlay_video, "probe_video", fake_probe)
+    timeline = VideoTimeline.from_paths(paths, overlap_frames=(10,))
+
+    assert timeline.duration_seconds == pytest.approx(19.5)
+    assert timeline.join_times == (9.5,)
+    assert timeline.overlap_frames == (10,)
+    assert timeline.segments[0].effective_source_end_seconds == pytest.approx(9.5)
+    at_join = timeline.locate(9.5)
+    assert at_join.index == 1
+    assert at_join.local_seconds == pytest.approx(0.0)

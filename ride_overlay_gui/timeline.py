@@ -16,6 +16,37 @@ def format_clock(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
+def format_timecode(seconds: float, fps: float) -> str:
+    """Format an elapsed position as HH:MM:SS:FF using the output frame rate."""
+
+    value = max(0.0, seconds)
+    total_seconds = math.floor(value + 1e-9)
+    nominal_fps = max(1, round(fps))
+    frame = round((value - total_seconds) * fps)
+    if frame >= nominal_fps:
+        carry, frame = divmod(frame, nominal_fps)
+        total_seconds += carry
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    frame_width = max(2, len(str(nominal_fps - 1)))
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}:{frame:0{frame_width}d}"
+
+
+def frame_step_target(
+    current_seconds: float,
+    total_seconds: float,
+    fps: float,
+    direction: int,
+) -> float:
+    """Return the nearest output-frame position one step left or right."""
+
+    duration = max(0.0, total_seconds)
+    current = min(max(current_seconds, 0.0), duration)
+    current_frame = round(current * fps)
+    target_frame = max(0, current_frame + (-1 if direction < 0 else 1))
+    return min(duration, target_frame / fps)
+
+
 def format_offset_frames(frames: int, fps: float) -> str:
     sign = "+" if frames >= 0 else "-"
     absolute = abs(frames)
@@ -120,7 +151,7 @@ class TimelineWidget(QWidget):
         video_track = QRectF(outer.left(), outer.top() + 43, outer.width(), 20)
 
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#273449"))
+        painter.setBrush(QColor("#4D6B9C"))
         painter.drawRoundedRect(activity_track, 10, 10)
         painter.drawRoundedRect(video_track, 10, 10)
         painter.setBrush(QColor("#2F80ED"))

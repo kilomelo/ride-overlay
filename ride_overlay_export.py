@@ -52,24 +52,6 @@ def _temporary_output(target: Path) -> Path:
     return Path(value)
 
 
-def _concat_quote(path: Path) -> str:
-    return "'" + str(path).replace("'", "'\\''") + "'"
-
-
-def _write_concat_file(timeline: VideoTimeline, directory: Path) -> Path:
-    descriptor, value = tempfile.mkstemp(prefix=".ride-overlay-", suffix=".ffconcat", dir=directory)
-    path = Path(value)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write("ffconcat version 1.0\n")
-            for segment in timeline.segments:
-                handle.write(f"file {_concat_quote(segment.info.path)}\n")
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
-    return path
-
-
 def _check_export_inputs(timeline: VideoTimeline) -> tuple[str, bool]:
     if not timeline.segments:
         raise ExportError("项目目录中没有可用于成片导出的视频")
@@ -105,44 +87,76 @@ def export_composed_video(
     frame_count = math.ceil(video_timeline.duration_seconds * fps)
     full_activity = ClipRange(0.0, activity_duration_seconds)
     transparent_frame = Image.new("RGBA", (width, height), (0, 0, 0, 0)).tobytes("raw", "RGBA")
-
     temporary = _temporary_output(paths.output)
-    concat_file = _write_concat_file(video_timeline, paths.output.parent)
-    filter_graph = (
-        f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
-        f"setsar=1,fps={fps:g},format=rgba[base];"
-        "[base][1:v]overlay=0:0:format=auto:shortest=1,format=yuv420p[outv]"
+    filter_parts: list[str] = []
+    for index, segment in enumerate(video_timeline.segments):
+        source_start = segment.source_start_seconds
+        source_end = segment.effective_source_end_seconds
+        filter_parts.append(
+            f"[{index}:v]trim=start={source_start:.9f}:end={source_end:.9f},"
+            "setpts=PTS-STARTPTS,"
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+            f"setsar=1,fps={fps:g},format=rgba[v{index}]"
+        )
+        if has_audio:
+            filter_parts.append(
+                f"[{index}:a]atrim=start={source_start:.9f}:end={source_end:.9f},"
+                f"asetpts=PTS-STARTPTS[a{index}]"
+            )
+    if len(video_timeline.segments) == 1:
+        filter_parts.append("[v0]null[base]")
+        if has_audio:
+            filter_parts.append("[a0]anull[outa]")
+    elif has_audio:
+        concat_inputs = "".join(
+            f"[v{index}][a{index}]" for index in range(len(video_timeline.segments))
+        )
+        filter_parts.append(
+            f"{concat_inputs}concat=n={len(video_timeline.segments)}:v=1:a=1[base][outa]"
+        )
+    else:
+        concat_inputs = "".join(
+            f"[v{index}]" for index in range(len(video_timeline.segments))
+        )
+        filter_parts.append(
+            f"{concat_inputs}concat=n={len(video_timeline.segments)}:v=1:a=0[base]"
+        )
+    dashboard_input_index = len(video_timeline.segments)
+    filter_parts.append(
+        f"[base][{dashboard_input_index}:v]"
+        "overlay=0:0:format=auto:shortest=1,format=yuv420p[outv]"
     )
+    filter_graph = ";".join(filter_parts)
     command = [
         ffmpeg,
         "-y",
         "-hide_banner",
         "-loglevel",
         "error",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        str(concat_file),
-        "-f",
-        "rawvideo",
-        "-pixel_format",
-        "rgba",
-        "-video_size",
-        f"{width}x{height}",
-        "-framerate",
-        f"{fps:g}",
-        "-i",
-        "pipe:0",
-        "-filter_complex",
-        filter_graph,
-        "-map",
-        "[outv]",
     ]
+    for segment in video_timeline.segments:
+        command.extend(["-i", str(segment.info.path)])
+    command.extend(
+        [
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "rgba",
+            "-video_size",
+            f"{width}x{height}",
+            "-framerate",
+            f"{fps:g}",
+            "-i",
+            "pipe:0",
+            "-filter_complex",
+            filter_graph,
+            "-map",
+            "[outv]",
+        ]
+    )
     if has_audio:
-        command.extend(["-map", "0:a:0", "-c:a", "aac", "-b:a", "192k"])
+        command.extend(["-map", "[outa]", "-c:a", "aac", "-b:a", "192k"])
     command.extend(
         [
             "-c:v",
@@ -197,7 +211,6 @@ def export_composed_video(
         if process is not None and process.poll() is None:
             process.kill()
             process.wait()
-        concat_file.unlink(missing_ok=True)
         temporary.unlink(missing_ok=True)
 
     return {
@@ -210,5 +223,6 @@ def export_composed_video(
         "bitrate_mbps": bitrate,
         "audio_included": has_audio,
         "video_count": len(video_timeline.segments),
+        "video_join_overlap_frames": list(video_timeline.overlap_frames),
         "activity_start_offset_frames": offset_frames,
     }

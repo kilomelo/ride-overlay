@@ -49,6 +49,28 @@ def _make_clip(path: Path, color: str, frequency: int, size: str) -> None:
     )
 
 
+def _make_silent_clip(path: Path, color: str) -> None:
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c={color}:s=160x90:r=5:d=0.4",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+        check=True,
+    )
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required")
 def test_composed_export_concatenates_video_and_keeps_audio(tmp_path: Path) -> None:
     first = tmp_path / "001.mp4"
@@ -99,3 +121,86 @@ def test_composed_export_concatenates_video_and_keeps_audio(tmp_path: Path) -> N
     assert (output.width, output.height) == (160, 90)
     assert output.duration_seconds == pytest.approx(0.8, abs=0.08)
     assert green > 180 and green > red * 2 and green > blue * 2
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required")
+def test_composed_export_trims_video_and_audio_at_join(tmp_path: Path) -> None:
+    first = tmp_path / "001.mp4"
+    second = tmp_path / "002.mp4"
+    _make_clip(first, "red", 440, "160x90")
+    _make_clip(second, "blue", 660, "160x90")
+    timeline = VideoTimeline.from_paths((first, second), overlap_frames=(1,))
+    target = tmp_path / "rendered.mp4"
+    config = SimpleNamespace(
+        output=SimpleNamespace(width=160, height=90, fps=5, bitrate_mbps=1),
+        timeline=SimpleNamespace(activity_start_offset_frames=0),
+    )
+
+    result = export_composed_video(
+        config,
+        SimpleNamespace(output=target),
+        10,
+        [],
+        MarkerRenderer(),
+        timeline,
+    )
+
+    output = probe_video(target)
+    assert result["video_join_overlap_frames"] == [1]
+    assert result["audio_included"] is True
+    assert output.has_audio is True
+    assert output.duration_seconds == pytest.approx(0.6, abs=0.08)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required")
+def test_composed_export_handles_video_only_segments(tmp_path: Path) -> None:
+    first = tmp_path / "001.mp4"
+    second = tmp_path / "002.mp4"
+    _make_silent_clip(first, "red")
+    _make_silent_clip(second, "blue")
+    timeline = VideoTimeline.from_paths((first, second), overlap_frames=(1,))
+    target = tmp_path / "rendered.mp4"
+    config = SimpleNamespace(
+        output=SimpleNamespace(width=160, height=90, fps=5, bitrate_mbps=1),
+        timeline=SimpleNamespace(activity_start_offset_frames=0),
+    )
+
+    result = export_composed_video(
+        config,
+        SimpleNamespace(output=target),
+        10,
+        [],
+        MarkerRenderer(),
+        timeline,
+    )
+
+    output = probe_video(target)
+    assert result["audio_included"] is False
+    assert output.has_audio is False
+    assert output.duration_seconds == pytest.approx(0.6, abs=0.08)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required")
+def test_composed_export_handles_single_segment(tmp_path: Path) -> None:
+    source = tmp_path / "001.mp4"
+    _make_clip(source, "red", 440, "160x90")
+    timeline = VideoTimeline.from_paths((source,))
+    target = tmp_path / "rendered.mp4"
+    config = SimpleNamespace(
+        output=SimpleNamespace(width=160, height=90, fps=5, bitrate_mbps=1),
+        timeline=SimpleNamespace(activity_start_offset_frames=0),
+    )
+
+    result = export_composed_video(
+        config,
+        SimpleNamespace(output=target),
+        10,
+        [],
+        MarkerRenderer(),
+        timeline,
+    )
+
+    output = probe_video(target)
+    assert result["video_count"] == 1
+    assert output.has_audio is True
+    assert output.duration_seconds == pytest.approx(0.4, abs=0.08)

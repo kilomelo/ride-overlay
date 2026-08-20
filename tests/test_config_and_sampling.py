@@ -79,6 +79,18 @@ def test_duplicate_dashboard_ids_are_rejected() -> None:
         AppConfig.model_validate(raw)
 
 
+def test_global_opacity_defaults_to_one_and_is_validated() -> None:
+    assert AppConfig.model_validate(config_data()).opacity == 1
+
+    raw = config_data()
+    raw["opacity"] = 0.35
+    assert AppConfig.model_validate(raw).opacity == pytest.approx(0.35)
+
+    raw["opacity"] = 1.01
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(raw)
+
+
 def test_linear_interpolation_and_gap_limit() -> None:
     series = TimeSeries((0.0, 2.0, 10.0), (0.0, 4.0, 20.0))
     assert series.value_at(1.0) == pytest.approx(2.0)

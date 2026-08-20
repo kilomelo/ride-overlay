@@ -11,7 +11,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import QMessageBox, QProgressDialog
 
 import ride_overlay_gui.window as window_module
@@ -144,6 +144,16 @@ def test_gui_export_updates_native_dialog_only_on_gui_thread(
 
     window = EditorWindow(EditorProject.load(tmp_path))
     qtbot.addWidget(window)
+    window.show()
+    window.activateWindow()
+    window.canvas.setFocus()
+    qtbot.waitUntil(window.isActiveWindow)
+    qtbot.keyClick(window.canvas.viewport(), Qt.Key.Key_Space)
+    assert window.playback.is_playing is True
+    qtbot.keyClick(window.canvas.viewport(), Qt.Key.Key_Right)
+    assert window.playback.is_playing is False
+    assert window.current_time_seconds == pytest.approx(0.2)
+    assert "00:00:00:01" in window.time_label.text()
     gui_thread_id = threading.get_ident()
     window._start_export()
     qtbot.waitUntil(lambda: window._export_thread is None, timeout=15_000)

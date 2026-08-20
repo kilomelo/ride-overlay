@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtMultimedia import QMediaPlayer
+from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 
 from ride_overlay_gui.playback import VirtualPlaybackController
 from ride_overlay_video import VideoInfo, VideoSegment, VideoTimeline
@@ -104,6 +105,16 @@ class FakeMediaPlayer(QObject):
         self.positionChanged.emit(0)
 
 
+class FakeAudioOutput:
+    def __init__(self) -> None:
+        self.muted = False
+        self.changes: list[bool] = []
+
+    def setMuted(self, muted: bool) -> None:
+        self.muted = muted
+        self.changes.append(muted)
+
+
 def _timeline() -> VideoTimeline:
     first_info = VideoInfo(Path("a.mp4"), 10.0, 1920, 1080, 30.0, True)
     second_info = VideoInfo(Path("b.mp4"), 10.0, 1920, 1080, 30.0, True)
@@ -113,6 +124,18 @@ def _timeline() -> VideoTimeline:
             VideoSegment(second_info, 10.0, 20.0),
         ),
         20.0,
+    )
+
+
+def _trimmed_timeline() -> VideoTimeline:
+    first_info = VideoInfo(Path("a.mp4"), 10.0, 1920, 1080, 10.0, True)
+    second_info = VideoInfo(Path("b.mp4"), 10.0, 1920, 1080, 10.0, True)
+    return VideoTimeline(
+        (
+            VideoSegment(first_info, 0.0, 9.5, source_end_seconds=9.5),
+            VideoSegment(second_info, 9.5, 19.5, source_end_seconds=10.0),
+        ),
+        19.5,
     )
 
 
@@ -131,6 +154,8 @@ def _loaded_controller(
 
 def test_paused_cross_segment_seek_stays_paused_and_ignores_source_position_zero(qtbot) -> None:
     controller, player, output = _loaded_controller(qtbot)
+    audio = FakeAudioOutput()
+    controller.audio_output = audio  # type: ignore[assignment]
     positions: list[float] = []
     states: list[bool] = []
     controller.positionChanged.connect(positions.append)
@@ -150,6 +175,7 @@ def test_paused_cross_segment_seek_stays_paused_and_ignores_source_position_zero
     player.complete_load()
     assert player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
     assert controller.is_playing is False
+    assert audio.muted is True
     player.late_source_position_reset()
     assert all(position == pytest.approx(14.25) for position in positions)
     output.sink.videoFrameChanged.emit(FakeFrame())
@@ -160,6 +186,7 @@ def test_paused_cross_segment_seek_stays_paused_and_ignores_source_position_zero
     assert controller.current_position() == pytest.approx(14.25)
     assert all(position == pytest.approx(14.25) for position in positions)
     assert states == []
+    assert audio.muted is False
 
 
 def test_playing_cross_segment_seek_keeps_playing_and_ignores_stale_end(qtbot) -> None:
@@ -191,3 +218,28 @@ def test_playing_cross_segment_seek_keeps_playing_and_ignores_stale_end(qtbot) -
     assert player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
     assert all(position == pytest.approx(13.5) for position in positions)
     assert states == []
+
+
+def test_preview_audio_is_enabled_by_default(qtbot) -> None:
+    del qtbot
+    controller = VirtualPlaybackController(QGraphicsVideoItem())
+
+    assert controller.audio_output is not None
+    assert controller.audio_output.isMuted() is False
+
+
+def test_playback_switches_source_at_trimmed_join_before_end_of_media(qtbot) -> None:
+    del qtbot
+    player = FakeMediaPlayer()
+    output = FakeVideoOutput()
+    controller = VirtualPlaybackController(output, _player=player)  # type: ignore[arg-type]
+    controller.set_timeline(_trimmed_timeline())
+    player.complete_load()
+    output.sink.videoFrameChanged.emit(FakeFrame())
+    controller.play()
+
+    player.setPosition(9460)
+
+    assert controller.segment_index == 1
+    assert controller.is_playing is True
+    assert controller.current_position() == pytest.approx(9.5)

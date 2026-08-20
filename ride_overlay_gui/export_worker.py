@@ -47,6 +47,9 @@ class ExportWorker(QObject):
             {
                 **file_details(segment.info.path),
                 "duration_seconds": segment.duration_seconds,
+                "raw_duration_seconds": segment.info.duration_seconds,
+                "source_start_seconds": segment.source_start_seconds,
+                "source_end_seconds": segment.effective_source_end_seconds,
                 "global_start_seconds": segment.start_seconds,
                 "global_end_seconds": segment.end_seconds,
                 "width": segment.info.width,
