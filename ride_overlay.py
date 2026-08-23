@@ -38,11 +38,23 @@ from ride_overlay_dashboard import (
     DashboardConfig,
     DashboardDefinition,
     DashboardRuntime,
+    ElevationProfileDashboardConfig,
+    ElevationProfileRuntime,
+    FillDirection,
+    FillProgressDashboardConfig,
+    FillProgressRuntime,
     FrameRenderer,
+    GradeLevelDashboardConfig,
+    GradeLevelRuntime,
     HeartbeatAnimationState,
     HeartbeatDashboardConfig,
     HeartbeatRuntime,
     OutputConfig,
+    PixelElevationPoint,
+    RadialProgressDashboardConfig,
+    RadialProgressRuntime,
+    RotationDashboardConfig,
+    RotationRuntime,
     SmoothingConfig,
     SmoothingMethod,
     StrictModel,
@@ -52,6 +64,7 @@ from ride_overlay_dashboard import (
     blank_to_none,
     build_dashboard_runtimes,
     convert_value,
+    elevation_point_at,
     format_current_time,
     format_dashboard_value,
     format_elapsed_time,
@@ -101,13 +114,25 @@ __all__ = [
     "DashboardConfig",
     "DashboardDefinition",
     "DashboardRuntime",
+    "ElevationProfileDashboardConfig",
+    "ElevationProfileRuntime",
+    "FillDirection",
+    "FillProgressDashboardConfig",
+    "FillProgressRuntime",
     "FrameRenderer",
     "GapStrategy",
+    "GradeLevelDashboardConfig",
+    "GradeLevelRuntime",
     "HeartbeatAnimationState",
     "HeartbeatDashboardConfig",
     "HeartbeatRuntime",
     "MetricSource",
     "OutputConfig",
+    "PixelElevationPoint",
+    "RadialProgressDashboardConfig",
+    "RadialProgressRuntime",
+    "RotationDashboardConfig",
+    "RotationRuntime",
     "RawPoint",
     "ProjectedTrajectory",
     "RideOverlayError",
@@ -128,6 +153,7 @@ __all__ = [
     "build_dashboard_runtimes",
     "build_trajectory",
     "convert_value",
+    "elevation_point_at",
     "format_current_time",
     "format_dashboard_value",
     "format_elapsed_time",
@@ -153,6 +179,12 @@ ACTIVITY_EXTENSIONS = {".fit", ".gpx"}
 FONT_EXTENSIONS = {".otf", ".ttf", ".ttc"}
 DEFAULT_ARROW_RELATIVE_PATH = Path("assets/images/arrow.png")
 DEFAULT_HEART_RELATIVE_PATH = Path("assets/images/heart.png")
+DEFAULT_FILL_PROGRESS_RELATIVE_PATH = Path("assets/images/fill_progress_bar.png")
+DEFAULT_RADIAL_PROGRESS_RELATIVE_PATH = Path(
+    "assets/images/sector_fill_progress_bar.png"
+)
+DEFAULT_ROTATION_RELATIVE_PATH = Path("assets/images/sector_pointer.png")
+DEFAULT_GRADE_LEVEL_RELATIVE_PATH = Path("assets/images/level.png")
 
 
 class ToolError(RideOverlayError):
@@ -327,10 +359,15 @@ class InputsConfig(StrictModel):
     activity_file: str | None = None
     font_file: str | None = None
     background_image_file: str | None = None
+    foreground_image_file: str | None = None
     video_files: list[str] | None = None
 
     _normalize_blanks = field_validator(
-        "activity_file", "font_file", "background_image_file", mode="before"
+        "activity_file",
+        "font_file",
+        "background_image_file",
+        "foreground_image_file",
+        mode="before",
     )(_blank_to_none)
 
     @field_validator("video_files", mode="before")
@@ -399,11 +436,16 @@ class ResolvedPaths:
     activity: Path
     font: Path
     background_image: Path | None
+    foreground_image: Path | None
     output: Path
     preview: Path
     videos: tuple[Path, ...] = ()
     trajectory_markers: dict[str, Path] = dataclass_field(default_factory=dict)
     heartbeat_images: dict[str, Path] = dataclass_field(default_factory=dict)
+    fill_progress_images: dict[str, Path] = dataclass_field(default_factory=dict)
+    radial_progress_images: dict[str, Path] = dataclass_field(default_factory=dict)
+    rotation_images: dict[str, Path] = dataclass_field(default_factory=dict)
+    grade_level_images: dict[str, Path] = dataclass_field(default_factory=dict)
 
 
 def load_config(project: Path) -> AppConfig:
@@ -519,6 +561,16 @@ def resolve_paths(project_dir: Path, config: AppConfig) -> ResolvedPaths:
         if background_image.suffix.lower() != ".png":
             raise ConfigError("仪表盘背景图片目前只支持 PNG")
 
+    foreground_image = None
+    if config.inputs.foreground_image_file:
+        foreground_image = _safe_project_file(
+            project,
+            config.inputs.foreground_image_file,
+            "仪表盘前景图片",
+        )
+        if foreground_image.suffix.lower() != ".png":
+            raise ConfigError("仪表盘前景图片目前只支持 PNG")
+
     trajectory_markers: dict[str, Path] = {}
     for dashboard in config.dashboards:
         if not isinstance(dashboard, TrajectoryDashboardConfig):
@@ -553,6 +605,83 @@ def resolve_paths(project_dir: Path, config: AppConfig) -> ResolvedPaths:
             raise ConfigError(f"心跳动画仪表盘 {dashboard.id} 的心脏图片目前只支持 PNG")
         heartbeat_images[dashboard.id] = heart_image
 
+    fill_progress_images: dict[str, Path] = {}
+    for dashboard in config.dashboards:
+        if not isinstance(dashboard, FillProgressDashboardConfig):
+            continue
+        progress_image = (
+            _safe_project_file(
+                project,
+                dashboard.image_file,
+                f"裁剪进度条仪表盘 {dashboard.id} 的进度条图片",
+            )
+            if dashboard.image_file
+            else _default_image_asset(
+                DEFAULT_FILL_PROGRESS_RELATIVE_PATH,
+                "裁剪进度条图片",
+            )
+        )
+        if progress_image.suffix.lower() != ".png":
+            raise ConfigError(f"裁剪进度条仪表盘 {dashboard.id} 的图片目前只支持 PNG")
+        fill_progress_images[dashboard.id] = progress_image
+
+    radial_progress_images: dict[str, Path] = {}
+    for dashboard in config.dashboards:
+        if not isinstance(dashboard, RadialProgressDashboardConfig):
+            continue
+        progress_image = (
+            _safe_project_file(
+                project,
+                dashboard.image_file,
+                f"角度进度盘仪表盘 {dashboard.id} 的进度盘图片",
+            )
+            if dashboard.image_file
+            else _default_image_asset(
+                DEFAULT_RADIAL_PROGRESS_RELATIVE_PATH,
+                "角度进度盘图片",
+            )
+        )
+        if progress_image.suffix.lower() != ".png":
+            raise ConfigError(f"角度进度盘仪表盘 {dashboard.id} 的图片目前只支持 PNG")
+        radial_progress_images[dashboard.id] = progress_image
+
+    rotation_images: dict[str, Path] = {}
+    for dashboard in config.dashboards:
+        if not isinstance(dashboard, RotationDashboardConfig):
+            continue
+        rotation_image = (
+            _safe_project_file(
+                project,
+                dashboard.image_file,
+                f"旋转仪表盘 {dashboard.id} 的旋转图片",
+            )
+            if dashboard.image_file
+            else _default_image_asset(DEFAULT_ROTATION_RELATIVE_PATH, "旋转指针图片")
+        )
+        if rotation_image.suffix.lower() != ".png":
+            raise ConfigError(f"旋转仪表盘 {dashboard.id} 的图片目前只支持 PNG")
+        rotation_images[dashboard.id] = rotation_image
+
+    grade_level_images: dict[str, Path] = {}
+    for dashboard in config.dashboards:
+        if not isinstance(dashboard, GradeLevelDashboardConfig):
+            continue
+        level_image = (
+            _safe_project_file(
+                project,
+                dashboard.image_file,
+                f"坡度水平仪 {dashboard.id} 的水平仪图片",
+            )
+            if dashboard.image_file
+            else _default_image_asset(
+                DEFAULT_GRADE_LEVEL_RELATIVE_PATH,
+                "坡度水平仪图片",
+            )
+        )
+        if level_image.suffix.lower() != ".png":
+            raise ConfigError(f"坡度水平仪 {dashboard.id} 的图片目前只支持 PNG")
+        grade_level_images[dashboard.id] = level_image
+
     default_name = (
         "overlay.mov"
         if config.output.background.mode == BackgroundMode.TRANSPARENT
@@ -581,8 +710,13 @@ def resolve_paths(project_dir: Path, config: AppConfig) -> ResolvedPaths:
         activity,
         font,
         background_image,
+        foreground_image,
         *trajectory_markers.values(),
         *heartbeat_images.values(),
+        *fill_progress_images.values(),
+        *radial_progress_images.values(),
+        *rotation_images.values(),
+        *grade_level_images.values(),
     ):
         raise ConfigError("输出文件不得覆盖输入文件")
 
@@ -606,11 +740,16 @@ def resolve_paths(project_dir: Path, config: AppConfig) -> ResolvedPaths:
         activity=activity,
         font=font,
         background_image=background_image,
+        foreground_image=foreground_image,
         output=output,
         preview=export_dir / PREVIEW_FILENAME,
         videos=videos,
         trajectory_markers=trajectory_markers,
         heartbeat_images=heartbeat_images,
+        fill_progress_images=fill_progress_images,
+        radial_progress_images=radial_progress_images,
+        rotation_images=rotation_images,
+        grade_level_images=grade_level_images,
     )
 
 
@@ -937,6 +1076,9 @@ def run(args: argparse.Namespace, report: RunReport) -> None:
             "background_image": (
                 file_details(paths.background_image) if paths.background_image else None
             ),
+            "foreground_image": (
+                file_details(paths.foreground_image) if paths.foreground_image else None
+            ),
             "trajectory_marker_images": {
                 dashboard_id: file_details(path)
                 for dashboard_id, path in paths.trajectory_markers.items()
@@ -944,6 +1086,22 @@ def run(args: argparse.Namespace, report: RunReport) -> None:
             "heartbeat_images": {
                 dashboard_id: file_details(path)
                 for dashboard_id, path in paths.heartbeat_images.items()
+            },
+            "fill_progress_images": {
+                dashboard_id: file_details(path)
+                for dashboard_id, path in paths.fill_progress_images.items()
+            },
+            "radial_progress_images": {
+                dashboard_id: file_details(path)
+                for dashboard_id, path in paths.radial_progress_images.items()
+            },
+            "rotation_images": {
+                dashboard_id: file_details(path)
+                for dashboard_id, path in paths.rotation_images.items()
+            },
+            "grade_level_images": {
+                dashboard_id: file_details(path)
+                for dashboard_id, path in paths.grade_level_images.items()
             },
             "videos": [file_details(path) for path in paths.videos],
         }
@@ -960,6 +1118,8 @@ def run(args: argparse.Namespace, report: RunReport) -> None:
     LOGGER.info("字体文件: %s", paths.font.name)
     if paths.background_image:
         LOGGER.info("仪表盘背景: %s", paths.background_image.name)
+    if paths.foreground_image:
+        LOGGER.info("仪表盘前景: %s", paths.foreground_image.name)
 
     with report.stage("读取并处理运动数据"):
         activity = read_activity(paths.activity)

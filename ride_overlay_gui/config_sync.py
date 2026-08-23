@@ -105,6 +105,7 @@ class ConfigSynchronizer(QObject):
         anchor_y: float | None = None,
         font_size: int | None = None,
         width: float | None = None,
+        height: float | None = None,
     ) -> None:
         raw = deepcopy(self._raw)
         dashboard = next(
@@ -123,6 +124,8 @@ class ConfigSynchronizer(QObject):
             dashboard["font_size"] = int(font_size)
         if width is not None:
             dashboard["width"] = round(float(width), 3)
+        if height is not None:
+            dashboard["height"] = round(float(height), 3)
         self._schedule_write(raw)
 
     def update_offset_frames(self, value: int) -> None:

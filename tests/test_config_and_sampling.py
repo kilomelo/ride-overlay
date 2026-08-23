@@ -80,7 +80,13 @@ def test_duplicate_dashboard_ids_are_rejected() -> None:
 
 
 def test_global_opacity_defaults_to_one_and_is_validated() -> None:
-    assert AppConfig.model_validate(config_data()).opacity == 1
+    config = AppConfig.model_validate(config_data())
+    assert config.opacity == 1
+    assert config.inputs.foreground_image_file is None
+
+    raw = config_data()
+    raw.setdefault("inputs", {})["foreground_image_file"] = "   "
+    assert AppConfig.model_validate(raw).inputs.foreground_image_file is None
 
     raw = config_data()
     raw["opacity"] = 0.35

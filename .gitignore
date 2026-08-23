@@ -14,6 +14,19 @@ dist/
 test_proj/
 **/export/
 
+# Never stage raw activity or source-video material from ad-hoc test projects.
+*.[Ff][Ii][Tt]
+*.[Gg][Pp][Xx]
+*.[Aa][Vv][Ii]
+*.[Mm]4[Vv]
+*.[Mm][Kk][Vv]
+*.[Mm][Oo][Vv]
+*.[Mm][Pp]4
+*.[Ww][Ee][Bb][Mm]
+
+# The repository example is deliberately anonymized and reviewed for publication.
+!example_project/example_activity.fit
+
 # Default generated files when running against the repository root.
 overlay.mp4
 overlay.mov

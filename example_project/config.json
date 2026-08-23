@@ -1,0 +1,395 @@
+{
+  "schema_version": 2,
+  "inputs": {
+    "activity_file": "example_activity.fit",
+    "font_file": "Exo2-BoldItalic.ttf",
+    "background_image_file": "images/dashboard-background.png",
+    "foreground_image_file": "images/dashboard-foreground.png",
+    "video_files": null
+  },
+  "clip": {
+    "start_seconds": 0,
+    "end_seconds": 600,
+    "cumulative_origin": "activity_start"
+  },
+  "opacity": 1,
+  "output": {
+    "filename": null,
+    "width": 2560,
+    "height": 1440,
+    "fps": 30,
+    "background": {
+      "mode": "chroma_key",
+      "chroma_key_color": "#00FF00"
+    },
+    "bitrate_mbps": 16
+  },
+  "dashboards": [
+    {
+      "id": "speed",
+      "source": "speed",
+      "unit": "km/h",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "precision": 0,
+      "pad_zeros": true,
+      "update_interval_ms": 100,
+      "font_size": 130,
+      "anchor": {
+        "x": 0.096,
+        "y": 0.83
+      },
+      "align": "center",
+      "color": "#FFFFFFFF",
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
+        "opacity": 0.75
+      }
+    },
+    {
+      "id": "distance",
+      "source": "distance",
+      "unit": "km",
+      "smoothing": {
+        "method": "none"
+      },
+      "precision": 2,
+      "pad_zeros": true,
+      "update_interval_ms": 500,
+      "font_size": 80,
+      "anchor": {
+        "x": 0.716,
+        "y": 0.92
+      },
+      "align": "middle_left",
+      "color": "#FFFFFFFF",
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
+        "opacity": 0.75
+      }
+    },
+    {
+      "id": "elapsed_time",
+      "source": "elapsed_time",
+      "unit": "hms",
+      "smoothing": {
+        "method": "none"
+      },
+      "precision": 0,
+      "pad_zeros": true,
+      "update_interval_ms": 1000,
+      "font_size": 80,
+      "anchor": {
+        "x": 0.843,
+        "y": 0.92
+      },
+      "align": "middle_left",
+      "color": "#FFFFFFFF",
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
+        "opacity": 0.75
+      }
+    },
+    {
+      "id": "current_time",
+      "source": "current_time",
+      "unit": "ymdhms",
+      "smoothing": {
+        "method": "none"
+      },
+      "precision": 0,
+      "pad_zeros": true,
+      "update_interval_ms": 1000,
+      "font_size": 60,
+      "anchor": {
+        "x": 0.5,
+        "y": 0.945
+      },
+      "align": "bottom_center",
+      "color": "#FFFFFFFF",
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
+        "opacity": 0.75
+      }
+    },
+    {
+      "id": "heart_rate",
+      "source": "heart_rate",
+      "unit": "bpm",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "precision": 0,
+      "pad_zeros": true,
+      "update_interval_ms": 500,
+      "font_size": 80,
+      "anchor": {
+        "x": 0.031,
+        "y": 0.363
+      },
+      "align": "middle_left",
+      "color": "#FFFFFFFF",
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
+        "opacity": 0.75
+      }
+    },
+    {
+      "type": "fill_progress",
+      "id": "heart_rate_progress",
+      "source": "heart_rate",
+      "unit": "bpm",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "update_interval_ms": 100,
+      "width": 0.13671875,
+      "anchor": {
+        "x": 0.031,
+        "y": 0.417
+      },
+      "align": "middle_left",
+      "min_value": 55,
+      "max_value": 182,
+      "direction": "left_to_right",
+      "clip_granularity": 0.02857143,
+      "image_file": null
+    },
+    {
+      "type": "fill_progress",
+      "id": "power_progress",
+      "source": "power",
+      "unit": "W",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "update_interval_ms": 100,
+      "width": 0.13671875,
+      "anchor": {
+        "x": 0.031,
+        "y": 0.231
+      },
+      "align": "middle_left",
+      "min_value": 0,
+      "max_value": 300,
+      "direction": "left_to_right",
+      "clip_granularity": 0.02857143,
+      "image_file": null
+    },
+    {
+      "type": "rotation",
+      "id": "speed_needle",
+      "source": "speed",
+      "unit": "km/h",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "update_interval_ms": 100,
+      "width": 0.1171875,
+      "anchor": {
+        "x": 0.094,
+        "y": 0.833
+      },
+      "align": "center",
+      "min_value": 0,
+      "max_value": 50,
+      "start_angle": 198,
+      "angle_range": 252,
+      "clip_granularity": 0,
+      "center": {
+        "x": 0.5,
+        "y": 0.5
+      },
+      "image_file": null
+    },
+    {
+      "type": "radial_progress",
+      "id": "speed_dial",
+      "source": "speed",
+      "unit": "km/h",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "update_interval_ms": 100,
+      "width": 0.1171875,
+      "anchor": {
+        "x": 0.094,
+        "y": 0.833
+      },
+      "align": "center",
+      "min_value": 0,
+      "max_value": 50,
+      "start_angle": 198,
+      "angle_range": 252,
+      "clip_granularity": 0.01190476,
+      "center": {
+        "x": 0.5,
+        "y": 0.5
+      },
+      "image_file": null
+    },
+    {
+      "type": "trajectory",
+      "id": "route",
+      "width": 0.118,
+      "anchor": {
+        "x": 0.987,
+        "y": 0.021
+      },
+      "align": "top_right",
+      "margin": 0.01,
+      "update_interval_ms": 200,
+      "line_width": 6,
+      "remaining_color": "#FFFFFFAA",
+      "completed_color": "#FFAF1DAA",
+      "background_color": "#00000033",
+      "background_corner_radius": 24,
+      "overlap_blend_mode": "accumulate",
+      "marker_image_file": null,
+      "marker_scale": 0.4
+    },
+    {
+      "type": "elevation_profile",
+      "id": "elevation_profile",
+      "width": 0.269,
+      "height": 0.153,
+      "margin": 0.03,
+      "anchor": {
+        "x": 0.987,
+        "y": 0.832
+      },
+      "align": "bottom_right",
+      "update_interval_ms": 200,
+      "line_color": "#FFFFFFAA",
+      "line_width": 5,
+      "curve_smoothing": 0.3,
+      "dot_color": "#FFFFFFFF",
+      "dot_size": 20,
+      "vertical_line_color": "#FFAF1D99",
+      "vertical_line_width": 3,
+      "background_color": "#00000033",
+      "background_corner_radius": 24
+    },
+    {
+      "type": "grade_level",
+      "id": "grade_level",
+      "width": 0.05,
+      "anchor": {
+        "x": 0.058,
+        "y": 0.663
+      },
+      "align": "center",
+      "update_interval_ms": 100,
+      "angle_smoothing_seconds": 0.5,
+      "image_file": null
+    },
+    {
+      "id": "cadence",
+      "source": "cadence",
+      "unit": "rpm",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "precision": 0,
+      "pad_zeros": true,
+      "update_interval_ms": 500,
+      "font_size": 80,
+      "anchor": {
+        "x": 0.031,
+        "y": 0.547
+      },
+      "align": "middle_left",
+      "color": "#FFFFFFFF",
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
+        "opacity": 0.75
+      }
+    },
+    {
+      "id": "power",
+      "source": "power",
+      "unit": "W",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "precision": 0,
+      "pad_zeros": true,
+      "update_interval_ms": 500,
+      "font_size": 80,
+      "anchor": {
+        "x": 0.031,
+        "y": 0.177
+      },
+      "align": "middle_left",
+      "color": "#FFFFFFFF",
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
+        "opacity": 0.75
+      }
+    },
+    {
+      "id": "grade",
+      "source": "grade",
+      "unit": "%",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "precision": 1,
+      "pad_zeros": true,
+      "update_interval_ms": 500,
+      "font_size": 45,
+      "anchor": {
+        "x": 0.058,
+        "y": 0.678
+      },
+      "align": "center",
+      "color": "#FFFFFFFF"
+    },
+    {
+      "type": "heartbeat",
+      "id": "heartbeat",
+      "width": 0.0234375,
+      "anchor": {
+        "x": 0.11,
+        "y": 0.309
+      },
+      "align": "center",
+      "heart_image_file": null
+    }
+  ],
+  "timeline": {
+    "video_joins": [],
+    "activity_start_offset_frames": 0
+  }
+}

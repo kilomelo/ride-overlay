@@ -91,6 +91,13 @@ class EditorWindow(QMainWindow):
         status_controls.setContentsMargins(0, 0, 0, 0)
         status_controls.setSpacing(8)
         status_controls.addStretch(1)
+        self.preview_scale_button = QPushButton("适应窗口", self)
+        self.preview_scale_button.setCheckable(True)
+        self.preview_scale_button.setMinimumHeight(38)
+        self.preview_scale_button.setToolTip(
+            "在完整画面预览与 1:1 原始输出分辨率之间切换"
+        )
+        status_controls.addWidget(self.preview_scale_button)
         self.time_label = QLabel()
         self.time_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -127,6 +134,7 @@ class EditorWindow(QMainWindow):
         self.canvas.dashboardSelected.connect(self._select_dashboard)
         self.canvas.geometryChanged.connect(self._save_geometry)
         self.canvas.geometryCommitted.connect(self.config_sync.flush)
+        self.preview_scale_button.toggled.connect(self._set_original_resolution_preview)
         self.config_sync.configChanged.connect(self._reload_external_config)
         self.config_sync.configError.connect(self._config_error)
         self.config_sync.writeError.connect(self._show_error)
@@ -185,6 +193,16 @@ class EditorWindow(QMainWindow):
     def _toggle_playback(self) -> None:
         if self._export_thread is None:
             self.playback.toggle()
+
+    def _set_original_resolution_preview(self, enabled: bool) -> None:
+        self.canvas.set_fit_to_view(not enabled)
+        self.preview_scale_button.setText("原始分辨率" if enabled else "适应窗口")
+        message = (
+            "预览已切换为 1:1 原始分辨率，可使用滚动条查看画面"
+            if enabled
+            else "预览已适应窗口"
+        )
+        self.statusBar().showMessage(message, 3000)
 
     def _step_frame(self, direction: int) -> None:
         if self._export_thread is not None:

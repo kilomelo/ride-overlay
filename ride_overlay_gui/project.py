@@ -11,8 +11,13 @@ from ride_overlay import AppConfig, ResolvedPaths, load_config, resolve_paths
 from ride_overlay_dashboard import (
     ClipRange,
     DashboardConfig,
+    ElevationProfileDashboardConfig,
+    FillProgressDashboardConfig,
     FrameRenderer,
+    GradeLevelDashboardConfig,
     HeartbeatDashboardConfig,
+    RadialProgressDashboardConfig,
+    RotationDashboardConfig,
     RuntimeDefinition,
     TrajectoryDashboardConfig,
     build_dashboard_runtimes,
@@ -118,6 +123,7 @@ class EditorProject:
         anchor_x: float | None = None,
         anchor_y: float | None = None,
         size: float | int | None = None,
+        rebuild_runtime: bool = True,
     ) -> None:
         dashboard = self.dashboard(dashboard_id)
         self.config.schema_version = 2
@@ -128,9 +134,27 @@ class EditorProject:
         if size is not None:
             if isinstance(dashboard, DashboardConfig):
                 dashboard.font_size = min(2048, max(1, round(size)))
-            elif isinstance(dashboard, (TrajectoryDashboardConfig, HeartbeatDashboardConfig)):
+            elif isinstance(dashboard, ElevationProfileDashboardConfig):
+                new_width = min(1.0, max(0.001, round(float(size), 3)))
+                scale = new_width / dashboard.width
+                dashboard.width = new_width
+                dashboard.height = min(
+                    1.0,
+                    max(0.001, round(dashboard.height * scale, 3)),
+                )
+            elif isinstance(
+                dashboard,
+                (
+                    TrajectoryDashboardConfig,
+                    HeartbeatDashboardConfig,
+                    FillProgressDashboardConfig,
+                    GradeLevelDashboardConfig,
+                    RadialProgressDashboardConfig,
+                    RotationDashboardConfig,
+                ),
+            ):
                 dashboard.width = min(1.0, max(0.001, round(float(size), 3)))
-        if not isinstance(dashboard, DashboardConfig):
+        if rebuild_runtime and not isinstance(dashboard, DashboardConfig):
             self.rebuild_dashboard_runtime()
 
     def set_offset_frames(self, value: int) -> None:

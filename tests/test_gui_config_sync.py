@@ -4,9 +4,13 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from ride_overlay import AppConfig
 from ride_overlay_gui.config_sync import ConfigSynchronizer
+from ride_overlay_gui.project import EditorProject
 from ride_overlay_gui.timeline import (
     format_offset_frames,
     format_timecode,
@@ -62,6 +66,58 @@ def test_gui_writes_geometry_with_bounded_precision_and_upgrades_schema(
     assert saved["schema_version"] == 2
     assert saved["dashboards"][1]["anchor"] == {"x": 0.123, "y": 0.988}
     assert saved["dashboards"][1]["width"] == 0.333
+
+
+def test_gui_writes_elevation_width_and_height(tmp_path: Path, qtbot) -> None:
+    del qtbot
+    raw = _config()
+    raw["dashboards"].append(
+        {
+            "type": "elevation_profile",
+            "id": "elevation",
+            "width": 0.4,
+            "height": 0.2,
+            "anchor": {"x": 0.5, "y": 0.8},
+        }
+    )
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    sync = ConfigSynchronizer(tmp_path)
+
+    sync.update_dashboard_geometry("elevation", width=0.333333, height=0.166666)
+    sync.flush()
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["dashboards"][2]["width"] == 0.333
+    assert saved["dashboards"][2]["height"] == 0.167
+
+
+def test_editor_resizes_elevation_width_and_height_proportionally(qtbot) -> None:
+    del qtbot
+    raw = _config()
+    raw["dashboards"] = [
+        {
+            "type": "elevation_profile",
+            "id": "elevation",
+            "width": 0.4,
+            "height": 0.2,
+            "anchor": {"x": 0.5, "y": 0.8},
+        }
+    ]
+    project = EditorProject.__new__(EditorProject)
+    project.config = AppConfig.model_validate(raw)
+    rebuild_calls: list[bool] = []
+    project.rebuild_dashboard_runtime = lambda: rebuild_calls.append(True)
+
+    project.update_dashboard_geometry("elevation", size=0.2, rebuild_runtime=False)
+
+    dashboard = project.config.dashboards[0]
+    assert dashboard.width == pytest.approx(0.2)
+    assert dashboard.height == pytest.approx(0.1)
+    assert rebuild_calls == []
+
+    project.update_dashboard_geometry("elevation", size=0.3)
+    assert rebuild_calls == [True]
 
 
 def test_gui_writes_offset_as_integer_frames(tmp_path: Path, qtbot) -> None:

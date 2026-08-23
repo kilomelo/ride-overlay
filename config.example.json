@@ -5,6 +5,7 @@
     "activity_file": null,
     "font_file": null,
     "background_image_file": null,
+    "foreground_image_file": null,
     "video_files": null
   },
   "clip": {
@@ -46,8 +47,13 @@
       },
       "align": "bottom_center",
       "color": "#FFFFFFFF",
-      "stroke_width": 2,
-      "stroke_color": "#000000FF"
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 4,
+        "offset_y": 4,
+        "blur_radius": 6,
+        "opacity": 0.75
+      }
     },
     {
       "id": "distance",
@@ -66,8 +72,13 @@
       },
       "align": "bottom_center",
       "color": "#FFFFFFFF",
-      "stroke_width": 2,
-      "stroke_color": "#000000FF"
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 4,
+        "offset_y": 4,
+        "blur_radius": 6,
+        "opacity": 0.75
+      }
     },
     {
       "id": "elapsed_time",
@@ -86,8 +97,13 @@
       },
       "align": "top_center",
       "color": "#FFFFFFFF",
-      "stroke_width": 2,
-      "stroke_color": "#000000FF"
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 4,
+        "offset_y": 4,
+        "blur_radius": 6,
+        "opacity": 0.75
+      }
     },
     {
       "id": "current_time",
@@ -106,8 +122,13 @@
       },
       "align": "top_center",
       "color": "#FFFFFFFF",
-      "stroke_width": 2,
-      "stroke_color": "#000000FF"
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 4,
+        "offset_y": 4,
+        "blur_radius": 6,
+        "opacity": 0.75
+      }
     },
     {
       "type": "trajectory",
@@ -130,6 +151,28 @@
       "marker_scale": 2.0
     },
     {
+      "type": "elevation_profile",
+      "id": "elevation_profile",
+      "width": 0.4,
+      "height": 0.2,
+      "margin": 0.03,
+      "anchor": {
+        "x": 0.5,
+        "y": 0.95
+      },
+      "align": "bottom_center",
+      "update_interval_ms": 200,
+      "line_color": "#FFFFFFFF",
+      "line_width": 6,
+      "curve_smoothing": 0.6,
+      "dot_color": "#00E676FF",
+      "dot_size": 16,
+      "vertical_line_color": "#FFFFFF99",
+      "vertical_line_width": 2,
+      "background_color": "#00000066",
+      "background_corner_radius": 24
+    },
+    {
       "type": "heartbeat",
       "id": "heartbeat",
       "width": 0.08,
@@ -139,6 +182,95 @@
       },
       "align": "center",
       "heart_image_file": null
+    },
+    {
+      "type": "fill_progress",
+      "id": "heart_rate_progress",
+      "source": "heart_rate",
+      "unit": "bpm",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "update_interval_ms": 100,
+      "width": 0.18,
+      "anchor": {
+        "x": 0.1,
+        "y": 0.6
+      },
+      "align": "middle_left",
+      "min_value": 80,
+      "max_value": 180,
+      "direction": "left_to_right",
+      "clip_granularity": 0,
+      "image_file": null
+    },
+    {
+      "type": "radial_progress",
+      "id": "power_dial",
+      "source": "power",
+      "unit": "W",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "update_interval_ms": 100,
+      "width": 0.12,
+      "anchor": {
+        "x": 0.9,
+        "y": 0.6
+      },
+      "align": "center",
+      "min_value": 0,
+      "max_value": 400,
+      "start_angle": 225,
+      "angle_range": 270,
+      "clip_granularity": 0,
+      "center": {
+        "x": 0.5,
+        "y": 0.5
+      },
+      "image_file": null
+    },
+    {
+      "type": "rotation",
+      "id": "power_needle",
+      "source": "power",
+      "unit": "W",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "update_interval_ms": 100,
+      "width": 0.015,
+      "anchor": {
+        "x": 0.9,
+        "y": 0.6
+      },
+      "align": "center",
+      "min_value": 0,
+      "max_value": 400,
+      "start_angle": 225,
+      "angle_range": 270,
+      "clip_granularity": 0,
+      "center": {
+        "x": 0.5,
+        "y": 0.5
+      },
+      "image_file": null
+    },
+    {
+      "type": "grade_level",
+      "id": "grade_level",
+      "width": 0.08,
+      "anchor": {
+        "x": 0.5,
+        "y": 0.85
+      },
+      "align": "center",
+      "update_interval_ms": 100,
+      "angle_smoothing_seconds": 3.0,
+      "image_file": null
     }
   ]
 }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 import logging
 import math
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -53,6 +54,7 @@ class MetricSource(StrEnum):
     AVERAGE_HEART_RATE = "average_heart_rate"
     AVERAGE_CADENCE = "average_cadence"
     AVERAGE_POWER = "average_power"
+    NORMALIZED_POWER = "normalized_power"
 
 
 class GapStrategy(StrEnum):
@@ -1116,6 +1118,72 @@ def _running_average_series(series: TimeSeries) -> TimeSeries:
     )
 
 
+def _zero_filled_power_series(
+    points: list[RawPoint],
+    start: datetime,
+) -> tuple[TimeSeries | None, int]:
+    """Build a power series for statistics, treating missing record values as 0 W."""
+
+    samples: list[tuple[float, float]] = []
+    valid_sample_count = 0
+    zero_filled_count = 0
+    for point in points:
+        value = _as_float(point.power_w)
+        if value is None or value < 0:
+            value = 0.0
+            zero_filled_count += 1
+        else:
+            valid_sample_count += 1
+        samples.append(((point.timestamp - start).total_seconds(), value))
+    if valid_sample_count == 0:
+        return None, 0
+    return (
+        TimeSeries(
+            tuple(time_seconds for time_seconds, _ in samples),
+            tuple(value for _, value in samples),
+        ),
+        zero_filled_count,
+    )
+
+
+def _normalized_power_series(power: TimeSeries) -> TimeSeries | None:
+    """Calculate cumulative NP from 30-second trailing averages sampled at 1 Hz."""
+
+    first_second = max(1, math.ceil(power.times[0]))
+    last_second = math.floor(power.times[-1])
+    window: deque[float] = deque()
+    window_sum = 0.0
+    fourth_power_sum = 0.0
+    rolling_average_count = 0
+    times: list[float] = []
+    values: list[float] = []
+    for second in range(first_second, last_second + 1):
+        value = power.value_at(float(second))
+        if value is None:
+            window.clear()
+            window_sum = 0.0
+            continue
+        window.append(value)
+        window_sum += value
+        if len(window) > 30:
+            window_sum -= window.popleft()
+        if len(window) < 30:
+            continue
+        rolling_average = window_sum / 30
+        fourth_power_sum += rolling_average**4
+        rolling_average_count += 1
+        times.append(float(second))
+        values.append((fourth_power_sum / rolling_average_count) ** 0.25)
+    if not times:
+        return None
+    return TimeSeries(
+        tuple(times),
+        tuple(values),
+        interpolation_gap_seconds=0.0,
+        gap_strategy=GapStrategy.HOLD,
+    )
+
+
 def build_activity(points: list[RawPoint]) -> ActivityData:
     points = _merge_points(points)
     if len(points) < 2:
@@ -1135,6 +1203,7 @@ def build_activity(points: list[RawPoint]) -> ActivityData:
     cadence = _point_series(points, start, "cadence_rpm", non_negative=True)
     heart_rate = _point_series(points, start, "heart_rate_bpm", non_negative=True)
     power = _point_series(points, start, "power_w", non_negative=True)
+    statistical_power, zero_filled_power_count = _zero_filled_power_series(points, start)
     direct_grade = _point_series(points, start, "grade_percent")
     calories = _cumulative_point_series(points, start, "calories_kcal")
 
@@ -1157,16 +1226,10 @@ def build_activity(points: list[RawPoint]) -> ActivityData:
         interpolation_gap_seconds=None,
     )
     origins[MetricSource.ELAPSED_TIME] = "derived_from_record_timestamps"
-    local_start = start.astimezone()
-    clock_start = (
-        local_start.hour * 3600
-        + local_start.minute * 60
-        + local_start.second
-        + local_start.microsecond / 1_000_000
-    )
+    timestamp_start = start.timestamp()
     metrics[MetricSource.CURRENT_TIME] = TimeSeries(
         (0.0, duration),
-        (clock_start, clock_start + duration),
+        (timestamp_start, timestamp_start + duration),
         interpolation_gap_seconds=None,
     )
     origins[MetricSource.CURRENT_TIME] = "derived_from_record_timestamps_and_local_timezone"
@@ -1228,12 +1291,27 @@ def build_activity(points: list[RawPoint]) -> ActivityData:
         (MetricSource.AVERAGE_SPEED, speed),
         (MetricSource.AVERAGE_HEART_RATE, heart_rate),
         (MetricSource.AVERAGE_CADENCE, cadence),
-        (MetricSource.AVERAGE_POWER, power),
     )
     for metric, source_series in average_sources:
         if source_series is not None:
             metrics[metric] = _running_average_series(source_series)
             origins[metric] = "derived_time_weighted_running_average"
+    if statistical_power is not None:
+        metrics[MetricSource.AVERAGE_POWER] = _running_average_series(statistical_power)
+        origins[MetricSource.AVERAGE_POWER] = (
+            "derived_time_weighted_running_average_missing_power_as_zero"
+        )
+        normalized_power = _normalized_power_series(statistical_power)
+        if normalized_power is not None:
+            metrics[MetricSource.NORMALIZED_POWER] = normalized_power
+            origins[MetricSource.NORMALIZED_POWER] = (
+                "derived_30_second_rolling_fourth_power_missing_power_as_zero"
+            )
+        LOGGER.info(
+            "功率统计序列 %d 条记录，其中 %d 条缺少实时功率并按 0 W 计算平均功率和标准化功率",
+            len(statistical_power.times),
+            zero_filled_power_count,
+        )
     trajectory = build_trajectory(points, start)
     if trajectory is not None:
         if trajectory.invalid_position_count:

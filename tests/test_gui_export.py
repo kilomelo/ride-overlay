@@ -148,6 +148,14 @@ def test_gui_export_updates_native_dialog_only_on_gui_thread(
     window.activateWindow()
     window.canvas.setFocus()
     qtbot.waitUntil(window.isActiveWindow)
+    assert window.preview_scale_button.text() == "适应窗口"
+    window.preview_scale_button.click()
+    assert window.preview_scale_button.isChecked() is True
+    assert window.preview_scale_button.text() == "原始分辨率"
+    assert window.canvas.fit_to_view is False
+    assert window.canvas.transform().m11() == pytest.approx(1)
+    window.preview_scale_button.click()
+    assert window.canvas.fit_to_view is True
     qtbot.keyClick(window.canvas.viewport(), Qt.Key.Key_Space)
     assert window.playback.is_playing is True
     qtbot.keyClick(window.canvas.viewport(), Qt.Key.Key_Right)

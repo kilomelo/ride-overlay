@@ -49,10 +49,16 @@ include = ["ride_overlay_gui*"]
 "share/ride-overlay/assets/images" = [
   "assets/images/align_btn.png",
   "assets/images/arrow.png",
+  "assets/images/dashboard-background.png",
+  "assets/images/dashboard-foreground.png",
+  "assets/images/fill_progress_bar.png",
   "assets/images/heart.png",
+  "assets/images/level.png",
   "assets/images/move_widget.png",
   "assets/images/pause_btn.png",
   "assets/images/play_btn.png",
+  "assets/images/sector_fill_progress_bar.png",
+  "assets/images/sector_pointer.png",
 ]
 
 [tool.pytest.ini_options]
