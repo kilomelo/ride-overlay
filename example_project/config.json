@@ -5,11 +5,11 @@
     "font_file": "Exo2-BoldItalic.ttf",
     "background_image_file": "images/dashboard-background.png",
     "foreground_image_file": "images/dashboard-foreground.png",
-    "video_files": null
+    "video_files": []
   },
   "clip": {
-    "start_seconds": 0,
-    "end_seconds": 600,
+    "start_seconds": null,
+    "end_seconds": null,
     "cumulative_origin": "activity_start"
   },
   "opacity": 1,
@@ -22,7 +22,9 @@
       "mode": "chroma_key",
       "chroma_key_color": "#00FF00"
     },
-    "bitrate_mbps": 16
+    "bitrate_mbps": 12,
+    "video_codec": "h265",
+    "video_encoder": "auto"
   },
   "dashboards": [
     {
@@ -191,7 +193,7 @@
       },
       "align": "middle_left",
       "min_value": 0,
-      "max_value": 300,
+      "max_value": 500,
       "direction": "left_to_right",
       "clip_granularity": 0.02857143,
       "image_file": null
@@ -284,7 +286,7 @@
       "update_interval_ms": 200,
       "line_color": "#FFFFFFAA",
       "line_width": 5,
-      "curve_smoothing": 0.3,
+      "curve_smoothing": 0.2,
       "dot_color": "#FFFFFFFF",
       "dot_size": 20,
       "vertical_line_color": "#FFAF1D99",

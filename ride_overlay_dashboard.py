@@ -73,6 +73,21 @@ class BackgroundMode(StrEnum):
     CHROMA_KEY = "chroma_key"
 
 
+class VideoCodec(StrEnum):
+    H264 = "h264"
+    H265 = "h265"
+
+
+class VideoEncoder(StrEnum):
+    AUTO = "auto"
+    SOFTWARE = "software"
+    VIDEOTOOLBOX = "videotoolbox"
+
+
+# Kept as a public alias so code importing the pre-H.265 enum keeps working.
+H264Encoder = VideoEncoder
+
+
 class CumulativeOrigin(StrEnum):
     ACTIVITY_START = "activity_start"
     CLIP_START = "clip_start"
@@ -128,15 +143,32 @@ class OutputConfig(StrictModel):
     fps: Annotated[float, Field(gt=0, le=240)] = 30
     background: BackgroundConfig = Field(default_factory=BackgroundConfig)
     bitrate_mbps: Annotated[float, Field(gt=0, le=1000)] = 16
+    video_codec: VideoCodec = VideoCodec.H264
+    video_encoder: VideoEncoder = VideoEncoder.AUTO
 
     _normalize_filename = field_validator("filename", mode="before")(blank_to_none)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_h264_encoder(cls, value: Any) -> Any:
+        """Accept the old key while serializing all new configs with the generic name."""
+
+        if not isinstance(value, dict) or "h264_encoder" not in value:
+            return value
+        migrated = dict(value)
+        legacy = migrated.pop("h264_encoder")
+        current = migrated.get("video_encoder")
+        if current is not None and current != legacy:
+            raise ValueError("h264_encoder 与 video_encoder 的值冲突")
+        migrated.setdefault("video_encoder", legacy)
+        return migrated
 
     @model_validator(mode="after")
     def validate_dimensions(self) -> OutputConfig:
         if self.background.mode == BackgroundMode.CHROMA_KEY and (
             self.width % 2 or self.height % 2
         ):
-            raise ValueError("绿幕 H.264 输出的 width 和 height 必须是偶数")
+            raise ValueError("绿幕 H.264/H.265 输出的 width 和 height 必须是偶数")
         return self
 
 
@@ -2942,6 +2974,9 @@ class FrameRenderer:
             getattr(paths, "foreground_image", None),
             "仪表盘前景图片",
         )
+        self.overlay_base = self.dashboard_background or Image.new(
+            "RGBA", (self.width, self.height), (0, 0, 0, 0)
+        )
         try:
             ImageFont.truetype(str(self.font_path), size=16)
         except Exception as exc:
@@ -3843,9 +3878,12 @@ class FrameRenderer:
     ) -> Image.Image:
         """Render only dashboard content for compositing over source video."""
 
-        frame = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
-        if self.dashboard_background is not None:
-            frame.alpha_composite(self.dashboard_background)
+        overlay_base = getattr(self, "overlay_base", None)
+        if overlay_base is None:
+            overlay_base = getattr(self, "dashboard_background", None) or Image.new(
+                "RGBA", (self.width, self.height), (0, 0, 0, 0)
+            )
+        frame = overlay_base.copy()
         self._draw_dashboards(frame, runtimes, texts, preview=preview)
         dashboard_foreground = getattr(self, "dashboard_foreground", None)
         if dashboard_foreground is not None:

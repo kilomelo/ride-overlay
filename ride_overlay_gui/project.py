@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
 
-from ride_overlay import AppConfig, ResolvedPaths, load_config, resolve_paths
+from ride_overlay import (
+    CONFIG_FILENAME,
+    AppConfig,
+    ConfigError,
+    ResolvedPaths,
+    VideoCodec,
+    load_config,
+    resolve_paths,
+)
 from ride_overlay_dashboard import (
     ClipRange,
     DashboardConfig,
@@ -24,8 +35,50 @@ from ride_overlay_dashboard import (
     sample_dashboard_texts,
 )
 from ride_overlay_data import ActivityData, read_activity
+from ride_overlay_ffmpeg import FFmpegCapabilityError, select_video_encoder
 from ride_overlay_video import VideoTimeline
-from ride_overlay_video_analysis import prepare_editor_video_configuration
+from ride_overlay_video_analysis import atomic_write_json, prepare_editor_video_configuration
+
+LOGGER = logging.getLogger("ride-overlay")
+
+
+def ensure_editor_video_codec(project: Path, config: AppConfig) -> AppConfig:
+    """Probe requested H.265 encoding and persist the documented H.264 fallback."""
+
+    if config.output.video_codec != VideoCodec.H265:
+        return config
+    ffmpeg = shutil.which("ffmpeg")
+    try:
+        if ffmpeg is None:
+            raise FFmpegCapabilityError("找不到 ffmpeg")
+        plan = select_video_encoder(
+            ffmpeg,
+            config.output.video_codec,
+            config.output.video_encoder,
+            config.output.bitrate_mbps,
+        )
+    except (FFmpegCapabilityError, OSError) as exc:
+        config_path = project / CONFIG_FILENAME
+        try:
+            with config_path.open("r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+        except (OSError, json.JSONDecodeError) as read_exc:
+            raise ConfigError(f"无法为 H.265 回退更新 {config_path}: {read_exc}") from read_exc
+        output = raw.setdefault("output", {})
+        output["video_codec"] = "h264"
+        output["video_encoder"] = "auto"
+        output["bitrate_mbps"] = 16
+        output.pop("h264_encoder", None)
+        AppConfig.model_validate(raw)
+        atomic_write_json(config_path, raw)
+        LOGGER.warning(
+            "当前设备无法按配置使用 H.265（%s）；已将 config.json 自动改为 "
+            "H.264、16 Mbps、auto 编码器",
+            exc,
+        )
+        return load_config(project)
+    LOGGER.info("H.265 编码检测通过，将使用 %s", plan.name)
+    return config
 
 
 def _configured_overlap_frames(config: AppConfig, paths: ResolvedPaths) -> tuple[int, ...]:
@@ -67,6 +120,7 @@ class EditorProject:
         previous: EditorProject | None = None,
     ) -> EditorProject:
         project = project_dir.expanduser().resolve()
+        ensure_editor_video_codec(project, load_config(project))
         prepare_editor_video_configuration(project)
         config = load_config(project)
         paths = resolve_paths(project, config)

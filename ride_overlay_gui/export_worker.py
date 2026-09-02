@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from ride_overlay import RESULT_LOG_FILENAME, RunReport, file_details
+from ride_overlay import RESULT_LOG_FILENAME, RunReport, RunReportHandler, file_details
 from ride_overlay_dashboard import ClipRange, FrameRenderer, build_dashboard_runtimes
 from ride_overlay_data import activity_details
-from ride_overlay_export import ExportCancelled, export_composed_video
+from ride_overlay_export import ExportCancelled, ExportError, export_composed_video
 from ride_overlay_gui.project import EditorProject
 
 
@@ -59,6 +60,12 @@ class ExportWorker(QObject):
             }
             for segment in self.model.video_timeline.segments
         ]
+        report_logger = logging.getLogger("ride-overlay")
+        previous_log_level = report_logger.level
+        report_handler = RunReportHandler(report)
+        report_handler.setFormatter(logging.Formatter("%(message)s"))
+        report_logger.setLevel(logging.DEBUG)
+        report_logger.addHandler(report_handler)
         try:
             with report.stage("检查完整运动数据和仪表盘"):
                 clip = ClipRange(0.0, self.model.activity.duration_seconds)
@@ -83,11 +90,15 @@ class ExportWorker(QObject):
                 )
                 report.details["result"] = result
         except ExportCancelled:
+            report_logger.warning("完整视频导出已取消")
             report.finish("CANCELLED", 130)
             report.write()
             self.cancelled.emit()
         except Exception as exc:
             report.details["error"] = str(exc)
+            if isinstance(exc, ExportError) and exc.details:
+                report.details["export_failure"] = exc.details
+            report_logger.error("完整视频导出失败: %s", exc)
             report.finish("FAILED", 4)
             report.write()
             self.failed.emit(str(exc))
@@ -96,4 +107,6 @@ class ExportWorker(QObject):
             report.write()
             self.succeeded.emit(result)
         finally:
+            report_logger.removeHandler(report_handler)
+            report_logger.setLevel(previous_log_level)
             self.completed.emit()

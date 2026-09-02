@@ -26,7 +26,9 @@
       "mode": "chroma_key",
       "chroma_key_color": "#00FF00"
     },
-    "bitrate_mbps": 16
+    "bitrate_mbps": 12,
+    "video_codec": "h265",
+    "video_encoder": "auto"
   },
   "dashboards": [
     {

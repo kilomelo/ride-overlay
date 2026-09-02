@@ -85,7 +85,7 @@ def _file_signature(project: Path, info: VideoInfo) -> dict[str, object]:
     }
 
 
-def _atomic_write_json(path: Path, raw: dict[str, Any]) -> None:
+def atomic_write_json(path: Path, raw: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
@@ -547,7 +547,7 @@ def prepare_editor_video_configuration(project_dir: Path) -> VideoPreparationRes
             "file_signatures": signatures,
             "analyses": [asdict(item) for item in analyses],
         }
-        _atomic_write_json(cache_path, cache_payload)
+        atomic_write_json(cache_path, cache_payload)
     analysis_by_pair = {(item.previous_file, item.next_file): item for item in analyses}
 
     configured_joins: list[dict[str, Any]] = []
@@ -585,7 +585,7 @@ def prepare_editor_video_configuration(project_dir: Path) -> VideoPreparationRes
         or config.schema_version != 2
     )
     if changed:
-        _atomic_write_json(config_path, raw)
+        atomic_write_json(config_path, raw)
     _write_analysis_report(
         report_path,
         project,

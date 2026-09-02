@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 from PySide6.QtCore import Qt, QThread, Slot
 from PySide6.QtGui import QCloseEvent, QIcon, QKeySequence, QPixmap, QShortcut, QTransform
 from PySide6.QtWidgets import (
@@ -20,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ride_overlay_export import timeline_frame_count
 from ride_overlay_gui.assets import image_asset
 from ride_overlay_gui.canvas import EditorCanvas
 from ride_overlay_gui.config_sync import ConfigSynchronizer
@@ -33,6 +32,8 @@ from ride_overlay_gui.timeline import (
     format_timecode,
     frame_step_target,
 )
+
+PLAYBACK_RATES = (1.0, 2.0, 3.0, 5.0, 10.0, 0.5)
 
 
 class EditorWindow(QMainWindow):
@@ -81,10 +82,19 @@ class EditorWindow(QMainWindow):
         alignment_controls.addStretch(1)
         controls.addWidget(alignment_panel, 0, 0)
 
+        playback_panel = QWidget(root)
+        playback_controls = QHBoxLayout(playback_panel)
+        playback_controls.setContentsMargins(0, 0, 0, 0)
+        playback_controls.setSpacing(8)
         self.play_button = QToolButton(self)
         self.play_button.setFixedSize(62, 62)
         self.play_button.setIconSize(self.play_button.size())
-        controls.addWidget(self.play_button, 0, 1)
+        playback_controls.addWidget(self.play_button)
+        self.playback_rate_button = QPushButton("1 X", self)
+        self.playback_rate_button.setFixedSize(64, 38)
+        self.playback_rate_button.setToolTip("切换视频预览播放倍速")
+        playback_controls.addWidget(self.playback_rate_button)
+        controls.addWidget(playback_panel, 0, 1, Qt.AlignmentFlag.AlignCenter)
 
         status_panel = QWidget(root)
         status_controls = QHBoxLayout(status_panel)
@@ -119,14 +129,17 @@ class EditorWindow(QMainWindow):
         self._configure_shortcuts()
         self._refresh_timeline_model()
         self._set_playing_ui(False)
+        self._set_playback_rate_ui(self.playback.playback_rate)
         self._on_position_changed(0.0)
         if not model.video_timeline.segments:
             self.statusBar().showMessage("未找到视频：仍可在黑色画布上调整仪表盘，但不能导出成片")
 
     def _connect_signals(self) -> None:
         self.play_button.clicked.connect(self._toggle_playback)
+        self.playback_rate_button.clicked.connect(self._cycle_playback_rate)
         self.playback.positionChanged.connect(self._on_position_changed)
         self.playback.playingChanged.connect(self._set_playing_ui)
+        self.playback.playbackRateChanged.connect(self._set_playback_rate_ui)
         self.playback.errorOccurred.connect(self._show_error)
         self.timeline_widget.seekRequested.connect(self._seek)
         self.offset_left.stepRequested.connect(self._change_offset)
@@ -193,6 +206,17 @@ class EditorWindow(QMainWindow):
     def _toggle_playback(self) -> None:
         if self._export_thread is None:
             self.playback.toggle()
+
+    def _cycle_playback_rate(self) -> None:
+        current_index = min(
+            range(len(PLAYBACK_RATES)),
+            key=lambda index: abs(PLAYBACK_RATES[index] - self.playback.playback_rate),
+        )
+        next_rate = PLAYBACK_RATES[(current_index + 1) % len(PLAYBACK_RATES)]
+        self.playback.set_playback_rate(next_rate)
+
+    def _set_playback_rate_ui(self, rate: float) -> None:
+        self.playback_rate_button.setText(f"{rate:g} X")
 
     def _set_original_resolution_preview(self, enabled: bool) -> None:
         self.canvas.set_fit_to_view(not enabled)
@@ -285,8 +309,8 @@ class EditorWindow(QMainWindow):
         self.canvas.select_dashboard(None)
         self.config_sync.flush()
         self._set_export_controls_enabled(False)
-        frame_count = math.ceil(
-            self.model.video_timeline.duration_seconds * self.model.config.output.fps
+        frame_count = timeline_frame_count(
+            self.model.video_timeline, self.model.config.output.fps
         )
         progress = QProgressDialog("正在渲染并合成完整视频…", "取消", 0, frame_count, self)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
@@ -348,10 +372,19 @@ class EditorWindow(QMainWindow):
     @Slot(object)
     def _export_succeeded(self, result: dict[str, object]) -> None:
         self._dismiss_export_progress()
+        details: list[str] = []
+        encoder = result.get("encoder")
+        if encoder:
+            details.append(f"编码器：{encoder}")
+        elapsed = result.get("export_elapsed_seconds")
+        speed = result.get("export_speed_ratio")
+        if isinstance(elapsed, (int, float)) and isinstance(speed, (int, float)):
+            details.append(f"耗时：{elapsed / 60:.1f} 分钟（{speed:.2f}× 实时速度）")
+        summary = f"\n\n{'；'.join(details)}" if details else ""
         QMessageBox.information(
             self,
             "导出完成",
-            f"完整视频已生成：\n{result['path']}",
+            f"完整视频已生成：\n{result['path']}{summary}",
         )
 
     @Slot(str)

@@ -38,6 +38,7 @@ py-modules = [
   "ride_overlay_dashboard",
   "ride_overlay_data",
   "ride_overlay_export",
+  "ride_overlay_ffmpeg",
   "ride_overlay_video",
   "ride_overlay_video_analysis",
 ]

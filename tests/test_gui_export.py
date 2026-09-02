@@ -5,7 +5,9 @@ import os
 import shutil
 import subprocess
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,7 +16,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import QMessageBox, QProgressDialog
 
+import ride_overlay_gui.export_worker as export_worker_module
 import ride_overlay_gui.window as window_module
+from ride_overlay_data import ActivityData
+from ride_overlay_export import ExportError
+from ride_overlay_gui.export_worker import ExportWorker
 from ride_overlay_gui.project import EditorProject
 from ride_overlay_gui.window import EditorWindow
 
@@ -78,6 +84,37 @@ class OneFrameExportWorker(QObject):
         QThread.msleep(25)
         self.succeeded.emit({"path": "test.mp4"})
         self.completed.emit()
+
+
+def test_export_failure_report_captures_error_event_and_ffmpeg_details(
+    tmp_path: Path, monkeypatch
+) -> None:
+    export_dir = tmp_path / "export"
+    model = SimpleNamespace(
+        project_dir=tmp_path,
+        config=SimpleNamespace(model_dump=lambda **_kwargs: {}),
+        activity=ActivityData(datetime(2026, 1, 1, tzinfo=UTC), 1.0, {}, 1),
+        paths=SimpleNamespace(export_dir=export_dir),
+        video_timeline=SimpleNamespace(segments=()),
+    )
+    monkeypatch.setattr(export_worker_module, "build_dashboard_runtimes", lambda *_a, **_k: [])
+    monkeypatch.setattr(export_worker_module, "FrameRenderer", lambda *_a, **_k: object())
+
+    def fail_export(*_args, **_kwargs):
+        raise ExportError(
+            "模拟 FFmpeg 失败",
+            details={"ffmpeg_return_code": -9, "frames_submitted": 123},
+        )
+
+    monkeypatch.setattr(export_worker_module, "export_composed_video", fail_export)
+
+    ExportWorker(model).run()
+
+    content = (export_dir / "result.log").read_text(encoding="utf-8")
+    assert "error_count: 2" in content
+    assert "完整视频导出失败: 模拟 FFmpeg 失败" in content
+    assert '"ffmpeg_return_code": -9' in content
+    assert '"frames_submitted": 123' in content
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is required")
@@ -156,6 +193,10 @@ def test_gui_export_updates_native_dialog_only_on_gui_thread(
     assert window.canvas.transform().m11() == pytest.approx(1)
     window.preview_scale_button.click()
     assert window.canvas.fit_to_view is True
+    assert window.playback_rate_button.text() == "1 X"
+    for expected in ("2 X", "3 X", "5 X", "10 X", "0.5 X", "1 X"):
+        window.playback_rate_button.click()
+        assert window.playback_rate_button.text() == expected
     qtbot.keyClick(window.canvas.viewport(), Qt.Key.Key_Space)
     assert window.playback.is_playing is True
     qtbot.keyClick(window.canvas.viewport(), Qt.Key.Key_Right)

@@ -46,6 +46,7 @@ from ride_overlay_dashboard import (
     FrameRenderer,
     GradeLevelDashboardConfig,
     GradeLevelRuntime,
+    H264Encoder,
     HeartbeatAnimationState,
     HeartbeatDashboardConfig,
     HeartbeatRuntime,
@@ -61,6 +62,8 @@ from ride_overlay_dashboard import (
     TrajectoryDashboardConfig,
     TrajectoryOverlapBlendMode,
     TrajectoryRuntime,
+    VideoCodec,
+    VideoEncoder,
     blank_to_none,
     build_dashboard_runtimes,
     convert_value,
@@ -91,6 +94,11 @@ from ride_overlay_data import (
     read_fit,
     read_gpx,
     series_gap_details,
+)
+from ride_overlay_ffmpeg import (
+    FFmpegCapabilityError,
+    prevent_macos_sleep,
+    select_video_encoder,
 )
 from ride_overlay_video import (
     VideoError,
@@ -146,6 +154,9 @@ __all__ = [
     "TrajectoryOverlapBlendMode",
     "TrajectoryPoint",
     "TrajectoryRuntime",
+    "H264Encoder",
+    "VideoCodec",
+    "VideoEncoder",
     "TrajectorySample",
     "VideoJoinConfig",
     "activity_details",
@@ -910,11 +921,11 @@ def check_encoder(mode: BackgroundMode) -> str:
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise ToolError("找不到 ffmpeg，请先安装 FFmpeg 并确保它位于 PATH")
-    result = _run_checked([ffmpeg, "-hide_banner", "-encoders"], "检查 FFmpeg 编码器")
-    encoders = result.stdout.decode("utf-8", errors="replace")
-    required = "prores_ks" if mode == BackgroundMode.TRANSPARENT else "libx264"
-    if required not in encoders:
-        raise ToolError(f"当前 FFmpeg 不包含所需编码器: {required}")
+    if mode == BackgroundMode.TRANSPARENT:
+        result = _run_checked([ffmpeg, "-hide_banner", "-encoders"], "检查 FFmpeg 编码器")
+        encoders = result.stdout.decode("utf-8", errors="replace")
+        if "prores_ks" not in encoders:
+            raise ToolError("当前 FFmpeg 不包含所需编码器: prores_ks")
     return ffmpeg
 
 
@@ -929,6 +940,17 @@ def render_video(
     temporary = _temporary_output(paths.output)
     fps = config.output.fps
     frame_count = math.ceil(clip.duration * fps)
+    video_encoder = None
+    if config.output.background.mode == BackgroundMode.CHROMA_KEY:
+        try:
+            video_encoder = select_video_encoder(
+                ffmpeg,
+                config.output.video_codec,
+                config.output.video_encoder,
+                config.output.bitrate_mbps,
+            )
+        except FFmpegCapabilityError as exc:
+            raise ToolError(str(exc)) from exc
     command = [
         ffmpeg,
         "-y",
@@ -961,18 +983,9 @@ def render_video(
             ]
         )
     else:
-        command.extend(
-            [
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                "-b:v",
-                f"{config.output.bitrate_mbps:g}M",
-                "-movflags",
-                "+faststart",
-            ]
-        )
+        assert video_encoder is not None
+        command.extend(video_encoder.arguments)
+        command.extend(["-movflags", "+faststart"])
     command.append(str(temporary))
 
     LOGGER.info(
@@ -983,8 +996,11 @@ def render_video(
         paths.output.name,
     )
     process: subprocess.Popen[bytes] | None = None
+    sleep_preventer: subprocess.Popen[bytes] | None = None
+    started = time.monotonic()
     try:
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        sleep_preventer = prevent_macos_sleep(process)
         assert process.stdin is not None and process.stderr is not None
         last_texts: tuple[str | float | None, ...] | None = None
         last_frame: bytes | None = None
@@ -1013,15 +1029,28 @@ def render_video(
         if process is not None and process.poll() is None:
             process.kill()
             process.wait()
+        if sleep_preventer is not None and sleep_preventer.poll() is None:
+            sleep_preventer.terminate()
+            sleep_preventer.wait()
         temporary.unlink(missing_ok=True)
     LOGGER.info("视频已生成: %s", paths.output)
+    elapsed_seconds = time.monotonic() - started
     return {
         "artifact": file_details(paths.output),
         "encoder": (
             "prores_ks"
             if config.output.background.mode == BackgroundMode.TRANSPARENT
-            else "libx264"
+            else video_encoder.name
         ),
+        "video_codec": (
+            "prores"
+            if config.output.background.mode == BackgroundMode.TRANSPARENT
+            else config.output.video_codec.value
+        ),
+        "hardware_encoding": bool(video_encoder and video_encoder.hardware_accelerated),
+        "sleep_prevention": sleep_preventer is not None,
+        "export_elapsed_seconds": elapsed_seconds,
+        "export_speed_ratio": clip.duration / elapsed_seconds if elapsed_seconds > 0 else None,
         "frame_count": frame_count,
         "duration_seconds": clip.duration,
         "fps": fps,
@@ -1113,6 +1142,8 @@ def run(args: argparse.Namespace, report: RunReport) -> None:
             "resolution": f"{config.output.width}x{config.output.height}",
             "fps": config.output.fps,
             "bitrate_mbps": config.output.bitrate_mbps,
+            "video_codec": config.output.video_codec.value,
+            "video_encoder": config.output.video_encoder.value,
         }
     LOGGER.info("运动文件: %s", paths.activity.name)
     LOGGER.info("字体文件: %s", paths.font.name)

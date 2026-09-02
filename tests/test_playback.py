@@ -48,6 +48,8 @@ class FakeMediaPlayer(QObject):
         self._seekable = False
         self.pause_count = 0
         self.play_count = 0
+        self._playback_rate = 1.0
+        self.playback_rates: list[float] = []
 
     def setVideoOutput(self, _output: QObject) -> None:
         pass
@@ -57,6 +59,7 @@ class FakeMediaPlayer(QObject):
         self._state = QMediaPlayer.PlaybackState.StoppedState
         self._status = QMediaPlayer.MediaStatus.LoadingMedia
         self._seekable = False
+        self._playback_rate = 1.0
         self.playbackStateChanged.emit(self._state)
         self.positionChanged.emit(0)
         self.mediaStatusChanged.emit(self._status)
@@ -84,6 +87,13 @@ class FakeMediaPlayer(QObject):
 
     def playbackState(self) -> QMediaPlayer.PlaybackState:
         return self._state
+
+    def setPlaybackRate(self, rate: float) -> None:
+        self._playback_rate = rate
+        self.playback_rates.append(rate)
+
+    def playbackRate(self) -> float:
+        return self._playback_rate
 
     def mediaStatus(self) -> QMediaPlayer.MediaStatus:
         return self._status
@@ -226,6 +236,22 @@ def test_preview_audio_is_enabled_by_default(qtbot) -> None:
 
     assert controller.audio_output is not None
     assert controller.audio_output.isMuted() is False
+
+
+def test_playback_rate_defaults_to_one_and_survives_segment_switch(qtbot) -> None:
+    controller, player, _output = _loaded_controller(qtbot)
+    rates: list[float] = []
+    controller.playbackRateChanged.connect(rates.append)
+
+    assert controller.playback_rate == 1.0
+
+    controller.set_playback_rate(5.0)
+    controller.seek(12.0)
+
+    assert controller.playback_rate == 5.0
+    assert player.playbackRate() == 5.0
+    assert player.playback_rates[-1] == 5.0
+    assert rates == [5.0]
 
 
 def test_playback_switches_source_at_trimmed_join_before_end_of_media(qtbot) -> None:

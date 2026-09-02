@@ -10,9 +10,12 @@ from ride_overlay import (
     AppConfig,
     ClipRange,
     ConfigError,
+    H264Encoder,
     MetricSource,
     RawPoint,
     TimeSeries,
+    VideoCodec,
+    VideoEncoder,
     build_activity,
     build_dashboard_runtimes,
     format_value,
@@ -93,6 +96,30 @@ def test_global_opacity_defaults_to_one_and_is_validated() -> None:
     assert AppConfig.model_validate(raw).opacity == pytest.approx(0.35)
 
     raw["opacity"] = 1.01
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(raw)
+
+
+def test_video_codec_and_encoder_defaults_and_legacy_migration() -> None:
+    config = AppConfig.model_validate(config_data())
+    assert config.output.video_codec == VideoCodec.H264
+    assert config.output.video_encoder == VideoEncoder.AUTO
+    assert H264Encoder.AUTO == VideoEncoder.AUTO
+
+    raw = config_data()
+    raw["output"]["h264_encoder"] = "software"
+    migrated = AppConfig.model_validate(raw)
+    assert migrated.output.video_encoder == VideoEncoder.SOFTWARE
+    assert "h264_encoder" not in migrated.output.model_dump(mode="json")
+
+    raw = config_data()
+    raw["output"]["video_codec"] = "h265"
+    raw["output"]["video_encoder"] = "videotoolbox"
+    config = AppConfig.model_validate(raw)
+    assert config.output.video_codec == VideoCodec.H265
+    assert config.output.video_encoder == VideoEncoder.VIDEOTOOLBOX
+
+    raw["output"]["video_encoder"] = "unknown"
     with pytest.raises(ValidationError):
         AppConfig.model_validate(raw)
 

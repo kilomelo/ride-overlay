@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, QUrl, Signal
@@ -20,6 +21,7 @@ class _PendingSeek:
 class VirtualPlaybackController(QObject):
     positionChanged = Signal(float)
     playingChanged = Signal(bool)
+    playbackRateChanged = Signal(float)
     errorOccurred = Signal(str)
     segmentChanged = Signal(int)
 
@@ -46,6 +48,7 @@ class VirtualPlaybackController(QObject):
         # decode a still frame for a paused cross-segment seek; neither should
         # change the play/pause button.
         self._desired_playing = False
+        self._playback_rate = 1.0
         self._video_sink = None
         sink_getter = getattr(video_output, "videoSink", None)
         if callable(sink_getter):
@@ -64,6 +67,20 @@ class VirtualPlaybackController(QObject):
     @property
     def segment_index(self) -> int:
         return self._segment_index
+
+    @property
+    def playback_rate(self) -> float:
+        return self._playback_rate
+
+    def set_playback_rate(self, rate: float) -> None:
+        rate = float(rate)
+        if not math.isfinite(rate) or rate <= 0:
+            raise ValueError("播放倍速必须是大于 0 的有限数值")
+        if math.isclose(self._playback_rate, rate):
+            return
+        self._playback_rate = rate
+        self.player.setPlaybackRate(rate)
+        self.playbackRateChanged.emit(rate)
 
     def _set_desired_playing(self, playing: bool) -> None:
         playing = bool(playing)
@@ -100,6 +117,9 @@ class VirtualPlaybackController(QObject):
         self._pending_seek = _PendingSeek(max(0, local_ms))
         source = self.timeline.segments[index].info.path
         self.player.setSource(QUrl.fromLocalFile(str(source)))
+        # Some multimedia backends reset playback rate when replacing the
+        # source, so explicitly restore this editor-session setting.
+        self.player.setPlaybackRate(self._playback_rate)
         self.segmentChanged.emit(index)
 
     def seek(self, global_seconds: float) -> None:
