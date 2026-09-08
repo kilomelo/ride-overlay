@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
   "inputs": {
-    "activity_file": "example_activity.fit",
-    "font_file": "Exo2-BoldItalic.ttf",
-    "background_image_file": "images/dashboard-background.png",
-    "foreground_image_file": "images/dashboard-foreground.png",
-    "video_files": []
+    "activity_file": null,
+    "font_file": null,
+    "background_image_file": null,
+    "foreground_image_file": null,
+    "video_files": null
   },
   "clip": {
     "start_seconds": null,
@@ -177,28 +177,6 @@
       "image_file": null
     },
     {
-      "type": "fill_progress",
-      "id": "power_progress",
-      "source": "power",
-      "unit": "W",
-      "smoothing": {
-        "method": "moving_average",
-        "window_seconds": 1.0
-      },
-      "update_interval_ms": 100,
-      "width": 0.13671875,
-      "anchor": {
-        "x": 0.031,
-        "y": 0.231
-      },
-      "align": "middle_left",
-      "min_value": 0,
-      "max_value": 500,
-      "direction": "left_to_right",
-      "clip_granularity": 0.02857143,
-      "image_file": null
-    },
-    {
       "type": "rotation",
       "id": "speed_needle",
       "source": "speed",
@@ -215,7 +193,7 @@
       },
       "align": "center",
       "min_value": 0,
-      "max_value": 50,
+      "max_value": 40,
       "start_angle": 198,
       "angle_range": 252,
       "clip_granularity": 0,
@@ -242,7 +220,7 @@
       },
       "align": "center",
       "min_value": 0,
-      "max_value": 50,
+      "max_value": 40,
       "start_angle": 198,
       "angle_range": 252,
       "clip_granularity": 0.01190476,
@@ -255,7 +233,7 @@
     {
       "type": "trajectory",
       "id": "route",
-      "width": 0.118,
+      "width": 0.08,
       "anchor": {
         "x": 0.987,
         "y": 0.021
@@ -264,10 +242,15 @@
       "margin": 0.01,
       "update_interval_ms": 200,
       "line_width": 6,
-      "remaining_color": "#FFFFFFAA",
+      "remaining_color": "#FFFFFFDD",
       "completed_color": "#FFAF1DAA",
-      "background_color": "#00000033",
-      "background_corner_radius": 24,
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 4,
+        "offset_y": 4,
+        "blur_radius": 3,
+        "opacity": 0.75
+      },
       "overlap_blend_mode": "accumulate",
       "marker_image_file": null,
       "marker_scale": 0.4
@@ -334,32 +317,6 @@
       }
     },
     {
-      "id": "power",
-      "source": "power",
-      "unit": "W",
-      "smoothing": {
-        "method": "moving_average",
-        "window_seconds": 1.0
-      },
-      "precision": 0,
-      "pad_zeros": true,
-      "update_interval_ms": 500,
-      "font_size": 80,
-      "anchor": {
-        "x": 0.031,
-        "y": 0.177
-      },
-      "align": "middle_left",
-      "color": "#FFFFFFFF",
-      "shadow": {
-        "color": "#000000FF",
-        "offset_x": 3,
-        "offset_y": 3,
-        "blur_radius": 3,
-        "opacity": 0.75
-      }
-    },
-    {
       "id": "grade",
       "source": "grade",
       "unit": "%",
@@ -389,9 +346,5 @@
       "align": "center",
       "heart_image_file": null
     }
-  ],
-  "timeline": {
-    "video_joins": [],
-    "activity_start_offset_frames": 0
-  }
+  ]
 }

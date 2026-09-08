@@ -196,6 +196,32 @@ def test_trajectory_mask_has_antialiased_edge_pixels() -> None:
     assert any(count > 0 for count in mask.histogram()[1:255])
 
 
+def test_trajectory_shadow_configuration_is_optional_and_validated() -> None:
+    config = trajectory_config(
+        shadow={
+            "color": "#12345680",
+            "offset_x": -3.5,
+            "offset_y": 5.25,
+            "blur_radius": 8.5,
+            "opacity": 0.6,
+        }
+    )
+    dashboard = config.dashboards[0]
+
+    assert dashboard.shadow is not None
+    assert dashboard.shadow.color == "#12345680"
+    assert dashboard.shadow.offset_x == pytest.approx(-3.5)
+    assert dashboard.shadow.offset_y == pytest.approx(5.25)
+    assert dashboard.shadow.blur_radius == pytest.approx(8.5)
+    assert dashboard.shadow.opacity == pytest.approx(0.6)
+    assert trajectory_config().dashboards[0].shadow is None
+
+    with pytest.raises(ValueError):
+        trajectory_config(shadow={"opacity": 1.01})
+    with pytest.raises(ValueError):
+        trajectory_config(shadow={"blur_radius": -1})
+
+
 def test_render_simplification_removes_micro_jitter_but_preserves_reversals() -> None:
     noisy = tuple(
         PixelTrajectoryPoint(float(index), float(index), y, 0)
@@ -422,6 +448,89 @@ def _repeated_route_runtime() -> TrajectoryRuntime:
         height_px=40.0,
         scale_px_per_meter=1.0,
     )
+
+
+def test_trajectory_shadow_extends_bounds_without_being_clipped() -> None:
+    runtime = _repeated_route_runtime()
+    dashboard = trajectory_config(
+        width=1.0,
+        line_width=6,
+        remaining_color="#FFFFFF00",
+        completed_color="#00E676CC",
+        overlap_blend_mode="accumulate",
+        shadow={
+            "color": "#FF0000FF",
+            "offset_x": 0,
+            "offset_y": 30,
+            "blur_radius": 0,
+            "opacity": 1,
+        },
+    ).dashboards[0]
+    runtime = TrajectoryRuntime(
+        config=dashboard,
+        projected=runtime.projected,
+        marker_path=runtime.marker_path,
+        points=runtime.points,
+        segments=runtime.segments,
+        origin_x=runtime.origin_x,
+        origin_y=runtime.origin_y,
+        width_px=runtime.width_px,
+        height_px=runtime.height_px,
+        scale_px_per_meter=runtime.scale_px_per_meter,
+    )
+
+    plan = build_trajectory_coverage_plan(runtime, 64, 80)
+
+    assert plan is not None
+    assert plan.top + plan.height > runtime.origin_y + runtime.height_px
+    assert plan.base_layer.getpixel((30 - plan.left, 50 - plan.top)) == (255, 0, 0, 255)
+
+
+def test_trajectory_layers_follow_documented_compositing_order() -> None:
+    runtime = _repeated_route_runtime()
+    dashboard = trajectory_config(
+        width=1.0,
+        line_width=6,
+        remaining_color="#FFFFFF80",
+        completed_color="#00FF0080",
+        overlap_blend_mode="uniform",
+        background_color="#0000FFFF",
+        shadow={
+            "color": "#FF0000FF",
+            "offset_x": 0,
+            "offset_y": 0,
+            "blur_radius": 0,
+            "opacity": 1,
+        },
+    ).dashboards[0]
+    runtime = TrajectoryRuntime(
+        config=dashboard,
+        projected=SimpleNamespace(sample_at=lambda _seconds: None),
+        marker_path=runtime.marker_path,
+        points=runtime.points,
+        segments=runtime.segments,
+        origin_x=runtime.origin_x,
+        origin_y=runtime.origin_y,
+        width_px=runtime.width_px,
+        height_px=runtime.height_px,
+        scale_px_per_meter=runtime.scale_px_per_meter,
+    )
+    renderer = FrameRenderer.__new__(FrameRenderer)
+    renderer.width = 64
+    renderer.height = 40
+    renderer.marker_images = {}
+    renderer.trajectory_layers = {}
+    renderer.trajectory_static_layers = {}
+    frame = Image.new("RGBA", (64, 40), (0, 0, 0, 0))
+
+    renderer._render_trajectory(frame, runtime, 30.0)
+
+    expected = Image.new("RGBA", (1, 1), (0, 0, 255, 255))
+    expected.alpha_composite(Image.new("RGBA", (1, 1), (255, 0, 0, 255)))
+    expected.alpha_composite(Image.new("RGBA", (1, 1), (255, 255, 255, 128)))
+    expected.alpha_composite(Image.new("RGBA", (1, 1), (0, 255, 0, 128)))
+    assert frame.getpixel((30, 20)) == expected.getpixel((0, 0))
+    assert runtime.config.id in renderer.trajectory_static_layers
 
 
 def test_accumulated_overlap_deepens_after_each_distinct_pass() -> None:

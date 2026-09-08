@@ -303,6 +303,7 @@ class TrajectoryDashboardConfig(StrictModel):
     overlap_blend_mode: TrajectoryOverlapBlendMode = TrajectoryOverlapBlendMode.UNIFORM
     background_color: str | None = None
     background_corner_radius: Annotated[int, Field(ge=0, le=4096)] = 0
+    shadow: TextShadowConfig | None = None
     marker_image_file: str | None = None
     marker_scale: Annotated[float, Field(gt=0, le=100)] = 2.0
 
@@ -1054,6 +1055,11 @@ def _build_trajectory_runtime(
         "rendered_marker_size": {"width": marker_size[0], "height": marker_size[1]},
         "background_color": dashboard.background_color,
         "background_corner_radius": dashboard.background_corner_radius,
+        "shadow": (
+            dashboard.shadow.model_dump(mode="json")
+            if dashboard.shadow is not None
+            else None
+        ),
     }
     return runtime, details
 
@@ -2564,6 +2570,40 @@ def _colorize_mask(mask: Image.Image, color: str) -> Image.Image:
     return layer
 
 
+def _shadow_is_visible(shadow: TextShadowConfig | None) -> bool:
+    return shadow is not None and shadow.opacity > 0 and rgba_color(shadow.color)[3] > 0
+
+
+def _trajectory_shadow_layer(
+    route_mask: Image.Image,
+    shadow: TextShadowConfig | None,
+) -> Image.Image | None:
+    """Build a colored, shifted and blurred shadow from the complete-route mask."""
+
+    if not _shadow_is_visible(shadow):
+        return None
+    assert shadow is not None
+    if shadow.offset_x or shadow.offset_y:
+        mask = route_mask.transform(
+            route_mask.size,
+            Image.Transform.AFFINE,
+            (1, 0, -shadow.offset_x, 0, 1, -shadow.offset_y),
+            resample=Image.Resampling.BICUBIC,
+            fillcolor=0,
+        )
+    else:
+        mask = route_mask.copy()
+    if shadow.blur_radius > 0:
+        mask = mask.filter(ImageFilter.GaussianBlur(shadow.blur_radius))
+    red, green, blue, color_alpha = rgba_color(shadow.color)
+    effective_alpha = color_alpha * shadow.opacity
+    if effective_alpha < 255:
+        mask = mask.point(lambda value: round(value * effective_alpha / 255))
+    layer = Image.new("RGBA", route_mask.size, (red, green, blue, 0))
+    layer.putalpha(mask)
+    return layer
+
+
 def _draw_rounded_rectangle_mask(
     size: tuple[int, int],
     box: tuple[float, float, float, float],
@@ -2608,6 +2648,23 @@ def _trajectory_background_layer(
         runtime.config.background_corner_radius,
     )
     return _colorize_mask(mask, runtime.config.background_color)
+
+
+def _trajectory_complete_route_layer(
+    size: tuple[int, int],
+    runtime: TrajectoryRuntime,
+    left: int,
+    top: int,
+    route_mask: Image.Image,
+) -> Image.Image:
+    """Compose the static trajectory layers in their documented bottom-to-top order."""
+
+    layer = _trajectory_background_layer(size, runtime, left, top)
+    shadow_layer = _trajectory_shadow_layer(route_mask, runtime.config.shadow)
+    if shadow_layer is not None:
+        layer.alpha_composite(shadow_layer)
+    layer.alpha_composite(_colorize_mask(route_mask, runtime.config.remaining_color))
+    return layer
 
 
 def _elevation_background_layer(
@@ -2673,19 +2730,40 @@ def _trajectory_visual_bounds(
 
     point_x = [point.x for point in runtime.points]
     point_y = [point.y for point in runtime.points]
-    left = max(0, math.floor(min(runtime.origin_x, min(point_x) - padding)))
-    top = max(0, math.floor(min(runtime.origin_y, min(point_y) - padding)))
+    left_extent = min(runtime.origin_x, min(point_x) - padding)
+    top_extent = min(runtime.origin_y, min(point_y) - padding)
+    right_extent = max(runtime.origin_x + runtime.width_px, max(point_x) + padding)
+    bottom_extent = max(runtime.origin_y + runtime.height_px, max(point_y) + padding)
+    shadow = runtime.config.shadow
+    if _shadow_is_visible(shadow):
+        assert shadow is not None
+        blur_padding = math.ceil(shadow.blur_radius * 3)
+        route_padding = runtime.config.line_width / 2 + 2
+        left_extent = min(
+            left_extent,
+            min(point_x) - route_padding + shadow.offset_x - blur_padding,
+        )
+        top_extent = min(
+            top_extent,
+            min(point_y) - route_padding + shadow.offset_y - blur_padding,
+        )
+        right_extent = max(
+            right_extent,
+            max(point_x) + route_padding + shadow.offset_x + blur_padding,
+        )
+        bottom_extent = max(
+            bottom_extent,
+            max(point_y) + route_padding + shadow.offset_y + blur_padding,
+        )
+    left = max(0, math.floor(left_extent))
+    top = max(0, math.floor(top_extent))
     right = min(
         frame_width,
-        math.ceil(
-            max(runtime.origin_x + runtime.width_px, max(point_x) + padding)
-        ),
+        math.ceil(right_extent),
     )
     bottom = min(
         frame_height,
-        math.ceil(
-            max(runtime.origin_y + runtime.height_px, max(point_y) + padding)
-        ),
+        math.ceil(bottom_extent),
     )
     return left, top, right, bottom
 
@@ -2766,8 +2844,13 @@ def build_trajectory_coverage_plan(
         for segment in runtime.segments
     ]
     base_mask = _draw_rounded_paths(size, local_paths, runtime.config.line_width)
-    base_layer = _trajectory_background_layer(size, runtime, left, top)
-    base_layer.alpha_composite(_colorize_mask(base_mask, runtime.config.remaining_color))
+    base_layer = _trajectory_complete_route_layer(
+        size,
+        runtime,
+        left,
+        top,
+        base_mask,
+    )
 
     pixel_count = size[0] * size[1]
     route_coverage = base_mask.tobytes()
@@ -2941,6 +3024,9 @@ class FrameRenderer:
         ] = {}
         self.marker_images: dict[tuple[Path, float], Image.Image] = {}
         self.trajectory_layers: dict[str, tuple[float, Image.Image, tuple[int, int]]] = {}
+        self.trajectory_static_layers: dict[
+            str, tuple[tuple[int, int, int, int], Image.Image]
+        ] = {}
         self.elevation_static_layers: dict[str, tuple[Image.Image, tuple[int, int]]] = {}
         self.elevation_layers: dict[str, tuple[float, Image.Image, tuple[int, int]]] = {}
         self.trajectory_coverage_plans: dict[str, TrajectoryCoveragePlan] = {}
@@ -3037,7 +3123,7 @@ class FrameRenderer:
 
     @staticmethod
     def _shadow_is_visible(shadow: TextShadowConfig | None) -> bool:
-        return shadow is not None and shadow.opacity > 0 and rgba_color(shadow.color)[3] > 0
+        return _shadow_is_visible(shadow)
 
     def _build_numeric_text_layer(
         self,
@@ -3685,23 +3771,36 @@ class FrameRenderer:
             return
 
         completed, _remaining = trajectory_paths_at(runtime, time_seconds)
-        full_route = [
-            [(point.x, point.y) for point in segment]
-            for segment in runtime.segments
-        ]
         local_completed = [[(x - left, y - top) for x, y in path] for path in completed]
-        local_full_route = [[(x - left, y - top) for x, y in path] for path in full_route]
         layer_size = (right - left, bottom - top)
-        full_route_mask = _draw_rounded_paths(
-            layer_size,
-            local_full_route,
-            runtime.config.line_width,
-        )
+        static_layers = getattr(self, "trajectory_static_layers", None)
+        if static_layers is None:
+            static_layers = {}
+            self.trajectory_static_layers = static_layers
+        static_key = (left, top, right, bottom)
+        cached_static = static_layers.get(runtime.config.id)
+        if cached_static is None or cached_static[0] != static_key:
+            local_full_route = [
+                [(point.x - left, point.y - top) for point in segment]
+                for segment in runtime.segments
+            ]
+            full_route_mask = _draw_rounded_paths(
+                layer_size,
+                local_full_route,
+                runtime.config.line_width,
+            )
+            static_layer = _trajectory_complete_route_layer(
+                layer_size,
+                runtime,
+                left,
+                top,
+                full_route_mask,
+            )
+            static_layers[runtime.config.id] = (static_key, static_layer)
+        else:
+            static_layer = cached_static[1]
         completed_mask = _draw_rounded_paths(layer_size, local_completed, runtime.config.line_width)
-        layer = _trajectory_background_layer(layer_size, runtime, left, top)
-        layer.alpha_composite(
-            _colorize_mask(full_route_mask, runtime.config.remaining_color)
-        )
+        layer = static_layer.copy()
         layer.alpha_composite(_colorize_mask(completed_mask, runtime.config.completed_color))
         if marker is not None and marker_center is not None:
             marker_x = round(marker_center[0] - marker.width / 2 - left)

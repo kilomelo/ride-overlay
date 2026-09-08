@@ -1,6 +1,5 @@
 {
   "schema_version": 2,
-  "opacity": 1.0,
   "inputs": {
     "activity_file": null,
     "font_file": null,
@@ -13,14 +12,11 @@
     "end_seconds": null,
     "cumulative_origin": "activity_start"
   },
-  "timeline": {
-    "activity_start_offset_frames": 0,
-    "video_joins": []
-  },
+  "opacity": 1,
   "output": {
     "filename": null,
-    "width": 1920,
-    "height": 1080,
+    "width": 2560,
+    "height": 1440,
     "fps": 30,
     "background": {
       "mode": "chroma_key",
@@ -39,21 +35,21 @@
         "method": "moving_average",
         "window_seconds": 1.0
       },
-      "precision": 1,
+      "precision": 0,
       "pad_zeros": true,
       "update_interval_ms": 100,
-      "font_size": 128,
+      "font_size": 130,
       "anchor": {
-        "x": 0.25,
-        "y": 0.85
+        "x": 0.096,
+        "y": 0.83
       },
-      "align": "bottom_center",
+      "align": "center",
       "color": "#FFFFFFFF",
       "shadow": {
         "color": "#000000FF",
-        "offset_x": 4,
-        "offset_y": 4,
-        "blur_radius": 6,
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
         "opacity": 0.75
       }
     },
@@ -67,18 +63,18 @@
       "precision": 2,
       "pad_zeros": true,
       "update_interval_ms": 500,
-      "font_size": 96,
+      "font_size": 80,
       "anchor": {
-        "x": 0.75,
-        "y": 0.85
+        "x": 0.716,
+        "y": 0.92
       },
-      "align": "bottom_center",
+      "align": "middle_left",
       "color": "#FFFFFFFF",
       "shadow": {
         "color": "#000000FF",
-        "offset_x": 4,
-        "offset_y": 4,
-        "blur_radius": 6,
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
         "opacity": 0.75
       }
     },
@@ -92,98 +88,71 @@
       "precision": 0,
       "pad_zeros": true,
       "update_interval_ms": 1000,
-      "font_size": 72,
+      "font_size": 80,
       "anchor": {
-        "x": 0.5,
-        "y": 0.1
+        "x": 0.843,
+        "y": 0.92
       },
-      "align": "top_center",
+      "align": "middle_left",
       "color": "#FFFFFFFF",
       "shadow": {
         "color": "#000000FF",
-        "offset_x": 4,
-        "offset_y": 4,
-        "blur_radius": 6,
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
         "opacity": 0.75
       }
     },
     {
       "id": "current_time",
       "source": "current_time",
-      "unit": "hms",
+      "unit": "ymdhms",
       "smoothing": {
         "method": "none"
       },
       "precision": 0,
       "pad_zeros": true,
       "update_interval_ms": 1000,
-      "font_size": 72,
+      "font_size": 60,
       "anchor": {
         "x": 0.5,
-        "y": 0.2
+        "y": 0.945
       },
-      "align": "top_center",
+      "align": "bottom_center",
       "color": "#FFFFFFFF",
       "shadow": {
         "color": "#000000FF",
-        "offset_x": 4,
-        "offset_y": 4,
-        "blur_radius": 6,
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
         "opacity": 0.75
       }
     },
     {
-      "type": "trajectory",
-      "id": "route",
-      "width": 0.3,
-      "margin": 0.02,
-      "anchor": {
-        "x": 0.95,
-        "y": 0.05
+      "id": "heart_rate",
+      "source": "heart_rate",
+      "unit": "bpm",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
       },
-      "align": "top_right",
-      "update_interval_ms": 200,
-      "line_width": 8,
-      "remaining_color": "#FFFFFF66",
-      "completed_color": "#00E676CC",
-      "overlap_blend_mode": "uniform",
-      "background_color": null,
-      "background_corner_radius": 24,
-      "marker_image_file": null,
-      "marker_scale": 2.0
-    },
-    {
-      "type": "elevation_profile",
-      "id": "elevation_profile",
-      "width": 0.4,
-      "height": 0.2,
-      "margin": 0.03,
+      "precision": 0,
+      "pad_zeros": true,
+      "update_interval_ms": 500,
+      "font_size": 80,
       "anchor": {
-        "x": 0.5,
-        "y": 0.95
+        "x": 0.031,
+        "y": 0.363
       },
-      "align": "bottom_center",
-      "update_interval_ms": 200,
-      "line_color": "#FFFFFFFF",
-      "line_width": 6,
-      "curve_smoothing": 0.6,
-      "dot_color": "#00E676FF",
-      "dot_size": 16,
-      "vertical_line_color": "#FFFFFF99",
-      "vertical_line_width": 2,
-      "background_color": "#00000066",
-      "background_corner_radius": 24
-    },
-    {
-      "type": "heartbeat",
-      "id": "heartbeat",
-      "width": 0.08,
-      "anchor": {
-        "x": 0.1,
-        "y": 0.5
-      },
-      "align": "center",
-      "heart_image_file": null
+      "align": "middle_left",
+      "color": "#FFFFFFFF",
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
+        "opacity": 0.75
+      }
     },
     {
       "type": "fill_progress",
@@ -195,65 +164,38 @@
         "window_seconds": 1.0
       },
       "update_interval_ms": 100,
-      "width": 0.18,
+      "width": 0.13671875,
       "anchor": {
-        "x": 0.1,
-        "y": 0.6
+        "x": 0.031,
+        "y": 0.417
       },
       "align": "middle_left",
-      "min_value": 80,
-      "max_value": 180,
+      "min_value": 55,
+      "max_value": 182,
       "direction": "left_to_right",
-      "clip_granularity": 0,
-      "image_file": null
-    },
-    {
-      "type": "radial_progress",
-      "id": "power_dial",
-      "source": "power",
-      "unit": "W",
-      "smoothing": {
-        "method": "moving_average",
-        "window_seconds": 1.0
-      },
-      "update_interval_ms": 100,
-      "width": 0.12,
-      "anchor": {
-        "x": 0.9,
-        "y": 0.6
-      },
-      "align": "center",
-      "min_value": 0,
-      "max_value": 400,
-      "start_angle": 225,
-      "angle_range": 270,
-      "clip_granularity": 0,
-      "center": {
-        "x": 0.5,
-        "y": 0.5
-      },
+      "clip_granularity": 0.02857143,
       "image_file": null
     },
     {
       "type": "rotation",
-      "id": "power_needle",
-      "source": "power",
-      "unit": "W",
+      "id": "speed_needle",
+      "source": "speed",
+      "unit": "km/h",
       "smoothing": {
         "method": "moving_average",
         "window_seconds": 1.0
       },
       "update_interval_ms": 100,
-      "width": 0.015,
+      "width": 0.1171875,
       "anchor": {
-        "x": 0.9,
-        "y": 0.6
+        "x": 0.094,
+        "y": 0.833
       },
       "align": "center",
       "min_value": 0,
-      "max_value": 400,
-      "start_angle": 225,
-      "angle_range": 270,
+      "max_value": 40,
+      "start_angle": 198,
+      "angle_range": 252,
       "clip_granularity": 0,
       "center": {
         "x": 0.5,
@@ -262,17 +204,147 @@
       "image_file": null
     },
     {
-      "type": "grade_level",
-      "id": "grade_level",
+      "type": "radial_progress",
+      "id": "speed_dial",
+      "source": "speed",
+      "unit": "km/h",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "update_interval_ms": 100,
+      "width": 0.1171875,
+      "anchor": {
+        "x": 0.094,
+        "y": 0.833
+      },
+      "align": "center",
+      "min_value": 0,
+      "max_value": 40,
+      "start_angle": 198,
+      "angle_range": 252,
+      "clip_granularity": 0.01190476,
+      "center": {
+        "x": 0.5,
+        "y": 0.5
+      },
+      "image_file": null
+    },
+    {
+      "type": "trajectory",
+      "id": "route",
       "width": 0.08,
       "anchor": {
-        "x": 0.5,
-        "y": 0.85
+        "x": 0.987,
+        "y": 0.021
+      },
+      "align": "top_right",
+      "margin": 0.01,
+      "update_interval_ms": 200,
+      "line_width": 6,
+      "remaining_color": "#FFFFFFDD",
+      "completed_color": "#FFAF1DAA",
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 4,
+        "offset_y": 4,
+        "blur_radius": 3,
+        "opacity": 0.75
+      },
+      "overlap_blend_mode": "accumulate",
+      "marker_image_file": null,
+      "marker_scale": 0.4
+    },
+    {
+      "type": "elevation_profile",
+      "id": "elevation_profile",
+      "width": 0.269,
+      "height": 0.153,
+      "margin": 0.03,
+      "anchor": {
+        "x": 0.987,
+        "y": 0.832
+      },
+      "align": "bottom_right",
+      "update_interval_ms": 200,
+      "line_color": "#FFFFFFAA",
+      "line_width": 5,
+      "curve_smoothing": 0.2,
+      "dot_color": "#FFFFFFFF",
+      "dot_size": 20,
+      "vertical_line_color": "#FFAF1D99",
+      "vertical_line_width": 3,
+      "background_color": "#00000033",
+      "background_corner_radius": 24
+    },
+    {
+      "type": "grade_level",
+      "id": "grade_level",
+      "width": 0.05,
+      "anchor": {
+        "x": 0.058,
+        "y": 0.663
       },
       "align": "center",
       "update_interval_ms": 100,
-      "angle_smoothing_seconds": 3.0,
+      "angle_smoothing_seconds": 0.5,
       "image_file": null
+    },
+    {
+      "id": "cadence",
+      "source": "cadence",
+      "unit": "rpm",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "precision": 0,
+      "pad_zeros": true,
+      "update_interval_ms": 500,
+      "font_size": 80,
+      "anchor": {
+        "x": 0.031,
+        "y": 0.547
+      },
+      "align": "middle_left",
+      "color": "#FFFFFFFF",
+      "shadow": {
+        "color": "#000000FF",
+        "offset_x": 3,
+        "offset_y": 3,
+        "blur_radius": 3,
+        "opacity": 0.75
+      }
+    },
+    {
+      "id": "grade",
+      "source": "grade",
+      "unit": "%",
+      "smoothing": {
+        "method": "moving_average",
+        "window_seconds": 1.0
+      },
+      "precision": 1,
+      "pad_zeros": true,
+      "update_interval_ms": 500,
+      "font_size": 45,
+      "anchor": {
+        "x": 0.058,
+        "y": 0.678
+      },
+      "align": "center",
+      "color": "#FFFFFFFF"
+    },
+    {
+      "type": "heartbeat",
+      "id": "heartbeat",
+      "width": 0.0234375,
+      "anchor": {
+        "x": 0.11,
+        "y": 0.309
+      },
+      "align": "center",
+      "heart_image_file": null
     }
   ]
 }
