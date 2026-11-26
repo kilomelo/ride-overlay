@@ -2,6 +2,7 @@
   "schema_version": 2,
   "inputs": {
     "activity_file": null,
+    "auto_fix_startup_altitude": true,
     "font_file": null,
     "background_image_file": null,
     "foreground_image_file": null,

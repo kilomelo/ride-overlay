@@ -122,6 +122,8 @@ cp config.example.json /path/to/my-ride/config.json
 
 `inputs.foreground_image_file` 可以设为 `null` 或空字符串表示不使用。它只能写在 `inputs` 中；非空值必须是工程目录内的相对 PNG 路径。图片宽高比必须与输出分辨率一致，尺寸不同时会等比例缩放到输出尺寸。它适合放置表盘刻度、装饰边框或需要遮住指针和进度图形的前景元素。
 
+`inputs.auto_fix_startup_altitude` 默认是 `true`。工具在运动开始后 60 秒内查找明显的海拔突跳，结合移动距离、气压和首次定位等证据，再用后续约 10 秒的读数确认海拔已经稳定。确认后仅将稳定前的海拔标为缺失，保留整条运动时间轴和其他指标。数字海拔显示 `-`，海拔曲线的圆点在首个可信采样前隐藏，累计爬升从清洗后的海拔计算（若运动文件已提供逐点累计值，则沿用该值）。排除范围和判据会记录到 `export/result.log`。设为 `false` 可使用原始海拔读数。
+
 仓库的 `assets/images/` 提供所有图形仪表盘的默认 PNG，并提供 `dashboard-background.png`、`dashboard-foreground.png` 作为可复制修改的完整画面模板。背景和前景模板不会在配置留空时自动启用；范例工程在自身 `images/` 中保存副本，以满足工程资源必须位于工程目录内的路径安全规则。
 
 `clip.start_seconds`、`clip.end_seconds` 同时留空表示完整运动范围。`clip` 只影响命令行的静态预览和覆层素材输出，图形编辑器始终使用完整运动数据和完整视频。命令行正式输出要求：

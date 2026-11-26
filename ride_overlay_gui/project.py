@@ -126,8 +126,13 @@ class EditorProject:
         paths = resolve_paths(project, config)
         activity = (
             previous.activity
-            if previous is not None and previous.paths.activity == paths.activity
-            else read_activity(paths.activity)
+            if previous is not None
+            and previous.paths.activity == paths.activity
+            and previous.config.inputs.auto_fix_startup_altitude
+            == config.inputs.auto_fix_startup_altitude
+            else read_activity(
+                paths.activity, auto_fix_startup_altitude=config.inputs.auto_fix_startup_altitude
+            )
         )
         clip = ClipRange(0.0, activity.duration_seconds)
         runtimes = build_dashboard_runtimes(config, activity, clip, paths=paths)

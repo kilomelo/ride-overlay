@@ -1,10 +1,11 @@
 {
   "schema_version": 2,
   "inputs": {
-    "activity_file": null,
-    "font_file": null,
-    "background_image_file": null,
-    "foreground_image_file": null,
+    "activity_file": "example_activity.fit",
+    "auto_fix_startup_altitude": true,
+    "font_file": "Exo2-BoldItalic.ttf",
+    "background_image_file": "images/dashboard-background.png",
+    "foreground_image_file": "images/dashboard-foreground.png",
     "video_files": null
   },
   "clip": {

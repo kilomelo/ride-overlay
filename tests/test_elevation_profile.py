@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -146,6 +147,23 @@ def test_elevation_profile_visual_sizes_are_inside_outer_rectangle() -> None:
     assert runtime.plot_right + radius <= runtime.origin_x + runtime.width_px
     assert runtime.plot_top - radius >= runtime.origin_y
     assert runtime.plot_bottom + radius <= runtime.origin_y + runtime.height_px
+
+
+def test_elevation_profile_hides_marker_before_first_trusted_sample() -> None:
+    activity = altitude_activity((5.0, 10.0), (100.0, 120.0))
+    activity.metrics[MetricSource.ALTITUDE] = replace(
+        activity.metrics[MetricSource.ALTITUDE], allow_leading_hold=False
+    )
+    runtime = build_runtime(elevation_config(), activity)
+    renderer = bare_renderer()
+    before = Image.new("RGBA", (320, 180))
+    recovered = Image.new("RGBA", (320, 180))
+
+    renderer._render_elevation_profile(before, runtime, 4.9)
+    renderer._render_elevation_profile(recovered, runtime, 5.0)
+
+    assert not any(green and alpha for _, green, _, alpha in before.get_flattened_data())
+    assert any(green and alpha for _, green, _, alpha in recovered.get_flattened_data())
 
 
 def test_elevation_profile_rejects_rectangle_too_small_for_visual_sizes() -> None:

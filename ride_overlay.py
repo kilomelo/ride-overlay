@@ -368,6 +368,7 @@ class RunReportHandler(logging.Handler):
 
 class InputsConfig(StrictModel):
     activity_file: str | None = None
+    auto_fix_startup_altitude: bool = True
     font_file: str | None = None
     background_image_file: str | None = None
     foreground_image_file: str | None = None
@@ -1153,7 +1154,9 @@ def run(args: argparse.Namespace, report: RunReport) -> None:
         LOGGER.info("仪表盘前景: %s", paths.foreground_image.name)
 
     with report.stage("读取并处理运动数据"):
-        activity = read_activity(paths.activity)
+        activity = read_activity(
+            paths.activity, auto_fix_startup_altitude=config.inputs.auto_fix_startup_altitude
+        )
         report.details["activity"] = activity_details(activity)
 
     with report.stage("解析截取范围并检查仪表盘"):

@@ -7,11 +7,12 @@ import logging
 import math
 from collections import deque
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
+from statistics import median
 from typing import Any, Literal
 
 import fitdecode
@@ -20,6 +21,10 @@ import gpxpy
 LOGGER = logging.getLogger("ride-overlay")
 MAX_INTERPOLATION_GAP_SECONDS = 5.0
 ALTITUDE_SMOOTHING_WINDOW_SECONDS = 5.0
+STARTUP_ALTITUDE_SEARCH_SECONDS = 60.0
+STARTUP_ALTITUDE_STABILITY_SECONDS = 10.0
+STARTUP_ALTITUDE_MAX_SAMPLE_GAP_SECONDS = 3.0
+STARTUP_ALTITUDE_MIN_JUMP_METERS = 30.0
 ASCENT_NOISE_THRESHOLD_METERS = 1.0
 GRADE_DISTANCE_WINDOW_METERS = 20.0
 MIN_GRADE_DISTANCE_METERS = 5.0
@@ -88,6 +93,7 @@ class TimeSeries:
     cumulative: bool = False
     interpolation_gap_seconds: float | None = MAX_INTERPOLATION_GAP_SECONDS
     gap_strategy: GapStrategy = GapStrategy.MISSING
+    allow_leading_hold: bool = True
 
     def value_at(
         self,
@@ -103,6 +109,8 @@ class TimeSeries:
         if index < len(self.times) and math.isclose(self.times[index], time_seconds, abs_tol=1e-9):
             return self.values[index]
         if index == 0:
+            if not self.allow_leading_hold:
+                return None
             gap = self.times[0] - time_seconds
             return self.values[0] if gap_limit is None or gap <= gap_limit else None
         if index == len(self.times):
@@ -133,6 +141,7 @@ class TimeSeries:
             cumulative=self.cumulative,
             interpolation_gap_seconds=self.interpolation_gap_seconds,
             gap_strategy=self.gap_strategy,
+            allow_leading_hold=self.allow_leading_hold,
         )
 
 
@@ -238,6 +247,18 @@ class ProjectedTrajectory:
 
 
 @dataclass(frozen=True)
+class StartupAltitudeCorrection:
+    first_removed_seconds: float
+    first_trusted_seconds: float
+    removed_sample_count: int
+    jump_seconds: float
+    jump_meters: float
+    horizontal_distance_meters: float | None
+    pressure_height_change_meters: float | None
+    first_gps_fix: bool
+
+
+@dataclass(frozen=True)
 class ActivityData:
     start_time: datetime
     duration_seconds: float
@@ -245,6 +266,7 @@ class ActivityData:
     record_count: int
     metric_origins: dict[MetricSource, str] = dataclass_field(default_factory=dict)
     trajectory: TrajectoryData | None = None
+    startup_altitude_correction: StartupAltitudeCorrection | None = None
 
 
 def series_gap_details(
@@ -341,6 +363,11 @@ def activity_details(activity: ActivityData) -> dict[str, Any]:
         "available_metric_count": len(activity.metrics),
         "metrics": metrics,
         "trajectory": trajectory_details,
+        "startup_altitude_correction": (
+            asdict(activity.startup_altitude_correction)
+            if activity.startup_altitude_correction is not None
+            else None
+        ),
     }
 
 
@@ -990,6 +1017,132 @@ def _segment_by_time(points: list[RawPoint], start: datetime) -> dict[float, int
     }
 
 
+def _startup_altitude_correction(
+    points: list[RawPoint], start: datetime
+) -> StartupAltitudeCorrection | None:
+    """Find an early altitude reset followed by sustained readings at a new level."""
+
+    samples: list[tuple[float, float, RawPoint]] = []
+    first_gps_time: float | None = None
+    for point in points:
+        elapsed = (point.timestamp - start).total_seconds()
+        if elapsed > (
+            STARTUP_ALTITUDE_SEARCH_SECONDS
+            + STARTUP_ALTITUDE_STABILITY_SECONDS
+            + STARTUP_ALTITUDE_MAX_SAMPLE_GAP_SECONDS
+        ):
+            break
+        if (
+            first_gps_time is None
+            and point.latitude is not None
+            and point.longitude is not None
+            and abs(point.latitude) <= 90
+            and abs(point.longitude) <= 180
+        ):
+            first_gps_time = elapsed
+        altitude = _as_float(point.altitude_m)
+        if altitude is not None:
+            samples.append((elapsed, altitude, point))
+    times = [sample[0] for sample in samples]
+
+    for index in range(3, len(samples)):
+        jump_time, altitude, point = samples[index]
+        if jump_time > STARTUP_ALTITUDE_SEARCH_SECONDS:
+            break
+        previous_time, previous_altitude, previous = samples[index - 1]
+        elapsed = jump_time - previous_time
+        jump = altitude - previous_altitude
+        if (
+            elapsed > STARTUP_ALTITUDE_MAX_SAMPLE_GAP_SECONDS
+            or point.segment != previous.segment
+            or abs(jump) < STARTUP_ALTITUDE_MIN_JUMP_METERS
+        ):
+            continue
+
+        # Use the larger available distance estimate so disagreement or movement
+        # within a GPS gap does not make an actual climb look more suspicious.
+        distances = []
+        gps_distance = _haversine_meters(previous, point)
+        if gps_distance is not None:
+            distances.append(gps_distance)
+        if (
+            previous.distance_m is not None
+            and point.distance_m is not None
+            and point.distance_m >= previous.distance_m
+        ):
+            distances.append(point.distance_m - previous.distance_m)
+        if previous.speed_mps is not None and point.speed_mps is not None:
+            distances.append(max(previous.speed_mps, point.speed_mps) * elapsed)
+        distance = max(distances, default=None)
+        motion_disagrees = distance is not None and abs(jump) > 10 + 0.6 * distance
+
+        pressure_height_change = None
+        if (
+            previous.pressure_pa is not None
+            and point.pressure_pa is not None
+            and previous.pressure_pa > 0
+            and point.pressure_pa > 0
+        ):
+            # Approximate relative height using the near-surface pressure scale height.
+            pressure_height_change = 8430 * (
+                math.log(previous.pressure_pa) - math.log(point.pressure_pa)
+            )
+        pressure_disagrees = (
+            pressure_height_change is not None
+            and abs(pressure_height_change) <= abs(jump) / 4
+        )
+        gps_started = first_gps_time is not None and previous_time < first_gps_time <= jump_time
+        corroborated_reset = (
+            pressure_disagrees and (motion_disagrees or (distance is None and gps_started))
+            or pressure_height_change is None and motion_disagrees and gps_started
+        )
+        if not corroborated_reset:
+            continue
+
+        baseline_start = bisect.bisect_left(times, jump_time - STARTUP_ALTITUDE_STABILITY_SECONDS)
+        baseline = [height for _, height, _ in samples[baseline_start:index]]
+        if len(baseline) < 3:
+            continue
+        baseline_height = median(baseline)
+        if abs(previous_altitude - baseline_height) > 8:
+            continue
+        for recovery in range(index, len(samples)):
+            recovery_time = times[recovery]
+            if recovery_time > STARTUP_ALTITUDE_SEARCH_SECONDS:
+                break
+            end = bisect.bisect_left(times, recovery_time + STARTUP_ALTITUDE_STABILITY_SECONDS)
+            if end == len(samples):
+                break
+            window = samples[recovery:end + 1]
+            heights = [height for _, height, _ in window]
+            level = median(heights)
+            shift = level - baseline_height
+            if (
+                len(window) < 4
+                or shift * math.copysign(1, jump) < abs(jump) / 2
+                or abs(heights[0] - level) > 4
+                or max(heights) - min(heights) > 8
+                or any(
+                    right.segment != left.segment
+                    or t2 - t1 > STARTUP_ALTITUDE_MAX_SAMPLE_GAP_SECONDS
+                    or abs(h2 - h1) > max(3, 2 * (t2 - t1))
+                    for (t1, h1, left), (t2, h2, right) in zip(window, window[1:], strict=False)
+                )
+            ):
+                continue
+            return StartupAltitudeCorrection(
+                first_removed_seconds=times[0],
+                first_trusted_seconds=recovery_time,
+                removed_sample_count=recovery,
+                jump_seconds=jump_time,
+                jump_meters=jump,
+                horizontal_distance_meters=distance,
+                pressure_height_change_meters=pressure_height_change,
+                first_gps_fix=gps_started,
+            )
+    return None
+
+
 def _smooth_altitude_by_segment(
     altitude: TimeSeries,
     segments: dict[float, int],
@@ -1184,7 +1337,9 @@ def _normalized_power_series(power: TimeSeries) -> TimeSeries | None:
     )
 
 
-def build_activity(points: list[RawPoint]) -> ActivityData:
+def build_activity(
+    points: list[RawPoint], *, auto_fix_startup_altitude: bool = True
+) -> ActivityData:
     points = _merge_points(points)
     if len(points) < 2:
         raise ActivityError("运动数据至少需要两个不同时间戳的有效记录")
@@ -1193,11 +1348,33 @@ def build_activity(points: list[RawPoint]) -> ActivityData:
     if duration <= 0:
         raise ActivityError("运动数据总时长必须大于 0 秒")
 
+    correction = _startup_altitude_correction(points, start) if auto_fix_startup_altitude else None
+    if correction is not None:
+        cutoff = start + timedelta(seconds=correction.first_trusted_seconds)
+        for index, point in enumerate(points):
+            if point.timestamp >= cutoff:
+                break
+            if point.altitude_m is not None:
+                points[index] = replace(point, altitude_m=None)
+        LOGGER.warning(
+            "开头海拔在 %.3fs 跳变 %+.1f m，已排除 %d 个海拔样本（%.3fs 至 %.3fs，"
+            "结束时刻不含），判据：移动距离 %s m、气压估算高差 %s m、首次定位 %s",
+            correction.jump_seconds,
+            correction.jump_meters,
+            correction.removed_sample_count,
+            correction.first_removed_seconds,
+            correction.first_trusted_seconds,
+            correction.horizontal_distance_meters,
+            correction.pressure_height_change_meters,
+            correction.first_gps_fix,
+        )
     direct_distance = _direct_distance_series(points, start)
     distance = direct_distance or _derived_distance_series(points, start)
     direct_speed = _direct_speed_series(points, start)
     speed = direct_speed or _derived_speed_series(points, start)
     altitude = _point_series(points, start, "altitude_m")
+    if altitude is not None and correction is not None:
+        altitude = replace(altitude, allow_leading_hold=False)
     temperature = _point_series(points, start, "temperature_c")
     pressure = _point_series(points, start, "pressure_pa", non_negative=True)
     cadence = _point_series(points, start, "cadence_rpm", non_negative=True)
@@ -1259,6 +1436,8 @@ def build_activity(points: list[RawPoint]) -> ActivityData:
     grade = direct_grade
     if grade is None and smoothed_altitude is not None and distance is not None:
         grade = _derived_grade_series(smoothed_altitude, distance, segments)
+        if grade is not None and correction is not None:
+            grade = replace(grade, allow_leading_hold=False)
     if grade is not None:
         metrics[MetricSource.GRADE] = grade
         origins[MetricSource.GRADE] = (
@@ -1330,13 +1509,13 @@ def build_activity(points: list[RawPoint]) -> ActivityData:
                 "轨迹中检测到 %d 次不可信的位置跳跃，已断开对应线段",
                 jump_count,
             )
-    return ActivityData(start, duration, metrics, len(points), origins, trajectory)
+    return ActivityData(start, duration, metrics, len(points), origins, trajectory, correction)
 
 
-def read_activity(path: Path) -> ActivityData:
+def read_activity(path: Path, *, auto_fix_startup_altitude: bool = True) -> ActivityData:
     LOGGER.info("读取运动数据: %s", path.name)
     points = read_fit(path) if path.suffix.lower() == ".fit" else read_gpx(path)
-    activity = build_activity(points)
+    activity = build_activity(points, auto_fix_startup_altitude=auto_fix_startup_altitude)
     available = ", ".join(metric.value for metric in activity.metrics) or "无"
     LOGGER.info(
         "运动数据记录 %d 条，时长 %.3f 秒，可用指标: %s",

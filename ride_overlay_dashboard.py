@@ -6,7 +6,7 @@ import bisect
 import logging
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -522,6 +522,7 @@ class ElevationProfileRuntime:
     elevation_min_m: float
     elevation_max_m: float
     y_axis_min_m: float
+    allow_leading_hold: bool = True
 
 
 @dataclass(frozen=True)
@@ -1364,6 +1365,7 @@ def _build_elevation_profile_runtime(
         elevation_min_m=elevation_min,
         elevation_max_m=elevation_max,
         y_axis_min_m=y_axis_min,
+        allow_leading_hold=series.allow_leading_hold,
     )
     details = {
         "id": dashboard.id,
@@ -1858,12 +1860,7 @@ def _grade_angle_series(
         for grade_percent in grade_series.values
     )
     if smoothing_seconds <= 0 or len(grade_series.times) < 2:
-        return TimeSeries(
-            grade_series.times,
-            angle_values,
-            interpolation_gap_seconds=grade_series.interpolation_gap_seconds,
-            gap_strategy=grade_series.gap_strategy,
-        )
+        return replace(grade_series, values=angle_values)
 
     segment_starts = [0]
     gap_threshold = grade_series.interpolation_gap_seconds
@@ -1882,12 +1879,7 @@ def _grade_angle_series(
             gap_strategy=grade_series.gap_strategy,
         )
         smoothed_values.extend(segment.moving_average(smoothing_seconds).values)
-    return TimeSeries(
-        grade_series.times,
-        tuple(smoothed_values),
-        interpolation_gap_seconds=grade_series.interpolation_gap_seconds,
-        gap_strategy=grade_series.gap_strategy,
-    )
+    return replace(grade_series, values=tuple(smoothed_values))
 
 
 def _build_grade_level_runtime(
@@ -3642,6 +3634,9 @@ class FrameRenderer:
         if static is None:
             return
         static_layer, destination = static
+        if not runtime.allow_leading_hold and time_seconds < runtime.times[0]:
+            frame.alpha_composite(static_layer, dest=destination)
+            return
         left, top = destination
         layer = static_layer.copy()
         sample = elevation_point_at(runtime, time_seconds)

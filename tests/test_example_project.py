@@ -15,6 +15,7 @@ def test_example_project_is_self_contained_and_starts_without_video_metadata() -
     config = load_config(EXAMPLE_PROJECT)
 
     assert config.inputs.activity_file == "example_activity.fit"
+    assert config.inputs.auto_fix_startup_altitude is True
     assert config.inputs.font_file == "Exo2-BoldItalic.ttf"
     assert config.inputs.background_image_file == "images/dashboard-background.png"
     assert config.inputs.foreground_image_file == "images/dashboard-foreground.png"
